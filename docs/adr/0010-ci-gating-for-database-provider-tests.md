@@ -78,3 +78,16 @@
   - The last PR of each engine group adds that engine's entry (PRs 26 and 29).
   - The nightly job becomes a matrix of each engine's newest LTS or minor release.
 - **CI5. Pinning.** Images are pinned by tag in this ADR and in ADR-0011, and by digest in the workflow. Renovate updates both.
+
+## Amendments (harness final gate, 2026-10-12)
+
+- **CI6. The sentinel enforces the version floor.** The harness's first version only checked that the server version was not blank. That was the defect the final gate found.
+  - Each server backend reports its parsed server version.
+  - The sentinel asserts that version is at or above the provider's floor, from one table in the test library: PostgreSQL 16.
+  - The other floors (MySQL 8.4, MariaDB 11.4, SQL Server 2022) are added with each provider's backend.
+  - The sentinel keeps its shipped name, `ProviderBackend_IsLive`, which supersedes `DatabaseBackend_IsLive` and `PostgresBackend_IsLive`.
+- **CI7. The default image is the pinned tag from ADR-0011**: `postgres:16.15-trixie`, not the floating `postgres:16-trixie`. This supersedes the `env` example in the Decision. The workflow pins by digest (CI5).
+- **CI8. Skip reasons use the code's wording.**
+  - A provider-restricted test: "Requires provider(s) Postgres".
+  - A known gap: `[known gap <description>] <exception summary>`.
+  - This supersedes the quoted wording in the Decision.

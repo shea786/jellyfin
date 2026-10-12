@@ -131,3 +131,26 @@
   - The 33 derived fixtures seed in their constructors. An async factory would force sync-over-async blocking in every fixture constructor, or a conversion of all of them to `IAsyncLifetime`, which is churn.
   - `TestDatabase.Dispose` means "release": SQLite closes the database, Postgres drops it, and a pooled backend returns it to the pool.
   - The `fresh` flag arrives with the pool (PR 22).
+
+## Amendments (harness final gate, 2026-10-12)
+
+- **H7. Every check builds and tests in Debug as well as Release.**
+  - `Directory.Build.props` enables `AnalysisMode=AllEnabledByDefault` and the `Jellyfin.CodeAnalysis` analyzers only in Debug. A Release-only check missed CA2100 in `PostgresTestBackend`.
+  - A bare `dotnet build`, `dotnet test` or IDE build is Debug, so a Debug failure breaks every contributor.
+  - SQL built from identifiers we generate (`CREATE`/`DROP DATABASE`) cannot take parameters. It is quoted and suppressed with a justification at the method, not file-wide.
+- **H8. A gap covers only the assertion whose expected value depends on the provider.**
+  - A behavioural gap matches any assertion failure, so a whole-body span hides unrelated regressions. The final gate showed this: a filtering expectation that was wrong everywhere failed on SQLite and was silently skipped on Postgres.
+  - Assertions that hold on every provider sit outside the span. For example, which values a filter keeps is checked on every provider, compared case-insensitively and in a fixed order. Only the exact spelling and order are inside the span.
+  - Gaps that come from a server error still match the specific SQLSTATE or exception type.
+- **H9. A test of SQLite internals is SQLite-only, not a gap.**
+  - `UpdatePeople_GeneratedSqlUsesPeopleNameIndex` reads SQLite's `EXPLAIN QUERY PLAN` output, which no other engine can produce. It becomes `[ProviderFact(Sqlite)]` and the `LowerIndexLookup` gap is removed.
+  - Rule: a gap must be something the provider could later close. If no provider fix could make the test pass, the test is provider-specific.
+  - The Postgres `lower()` index is tested by the Postgres provider PR that adds it (PR 14), with its own plan check.
+- **H10. Shipped test code does not cite fork ADRs.**
+  - `docs/adr/` never goes upstream, so "ADR-0007" in a skip reason cannot be looked up.
+  - A gap is a `KnownGaps` field with a short description of the difference, for example "PostgreSQL has no min/max over uuid". It replaces the `ADR-xxxx/Gn` IDs in the Decision.
+  - There is no class-level `[KnownProviderGap]`; the unused attribute was removed earlier. Seeding that fails on a provider is covered by the ProcessExit sweep, as accepted in the harness review.
+- **H11. Container lifetime.** The Postgres container is stopped explicitly in the existing ProcessExit sweep, after the remaining databases are dropped, and this is best effort. Ryuk stays as the backstop for crashed or killed runs. Relying on Ryuk alone leaks containers where it is disabled (`TESTCONTAINERS_RYUK_DISABLED`).
+- **H12. Rejected review findings.**
+  - The copyright line in the new provider's `Properties/AssemblyInfo.cs` matches all four sibling projects word for word. It stays, for consistency.
+  - The SQLite run keeps 15 skipped rows for Postgres-only tests. They carry a clear reason, and ADR-0010 accepts this.
