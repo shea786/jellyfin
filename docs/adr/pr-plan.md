@@ -125,6 +125,13 @@ Source: a scratch run of step 01's tests on Postgres over the harness. SQLite pa
   - **step 14** cannot cite those rows as evidence for the `"C"` collation or the `NULLS FIRST`/`LAST` generator. Its ADR-0006 `[ProviderFact]` checks must exercise ordering through a query path that does not group by presentation key. The step 14 author confirms that path exists before writing the tests.
   - **step 15** is where those rows first run their assertions on Postgres. step 15 reports every row that leaves `GuidAggregates` by name: either it passes, or the gap it moved to. "`GuidAggregates` closed" is not "ordering verified". The step 15 explainer says so.
 
+- **B3. Harness rebase onto step 05 (`ccbb7d666e`, harness tip C6 `57760e8c33`).**
+  - **The default `LikeIgnoreAsciiCase` translation is proven on Postgres.** `lower(col) LIKE p ESCAPE '\'` runs and passes in `SqlSearchProviderCaseMatchingTests` (9 rows), `ActivityManagerFilterTests` (13 rows) and the People `Bob`/`bob` dedupe. Replacing the default with a plain `LIKE` fails 21 of them on Postgres, so the tests do discriminate.
+  - **`NameContains` and `SearchTerm` rows are masked by `GuidAggregates`** (42883 before any assertion). They join the B2 list: step 15 reports each of them by name, passing or moved to another gap.
+  - **New gap `UnicodeLower`** (Postgres, assertion failures): the test database uses `en_US.utf8` (`datcollate`, verified), so `lower('É')` folds to `é` and the ASCII-only pinning tests (`Émile`/`émile` dedupe) fail. Under `"C"` `lower()` folds ASCII only, as on SQLite. **Step 14 must close it**, and its gap removal is checked like any other: the wrapped rows pass, or the step explains why not.
+  - The SQLite-internals tests from step 05 (translation shape, equivalence grid, People case-sensitive `LIKE`) are marked SQLite-only in C5, the commit where the Postgres backend first exists. Accepted: before C5 there is no other provider to exclude.
+  - Postgres totals at the harness tip: 1183 passed, 100 skipped (64 `GuidAggregates`, 12 Windows-only, 11 SQLite-only, 10 collation, 1 NULL order, 1 `UnicodeLower`, 1 no migrations), 0 failed, identical over two runs.
+
 ## Amendments (single upstream PR, 2026-10-12)
 
 The user changed the delivery strategy. This supersedes "small, stacked, independently mergeable PRs" wherever it appears in this file and in the ADRs.
