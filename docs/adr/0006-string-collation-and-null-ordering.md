@@ -80,3 +80,22 @@
   - Put the dependency in one file. Suppress `EF1001` in that file only, with a one-line justification.
   - A `[PostgresFact]` asserts that the generated SQL contains `NULLS FIRST` for ascending and `NULLS LAST` for descending, so an Npgsql bump that breaks the generator fails CI rather than silently reordering results.
   - If upstream reviewers reject the internal API, the agreed fallback is to ask Npgsql to make `ReverseNullOrdering` public again. It is **not** the shared `CASE` rewrite.
+
+## Amendments (multi-target re-check, 2026-10-12)
+
+- **C1. NULL ordering stays a Postgres-only fix.** R1 is reconfirmed.
+  - The probe shows that only PostgreSQL reverses NULL order compared with SQLite.
+  - MySQL, MariaDB and SQL Server already sort NULL lowest, and they reject `NULLS FIRST`/`NULLS LAST` syntax anyway.
+  - No shared change is made.
+- **C2. Collation is set by a per-provider convention, at column level, like `"C"` on PostgreSQL.**
+  - The collations:
+    - MySQL: `utf8mb4_0900_bin`;
+    - MariaDB: `utf8mb4_nopad_bin`;
+    - SQL Server: `Latin1_General_100_BIN2` on `nvarchar`.
+  - The probe confirms that each of these reproduces SQLite's code-point order for the test strings.
+  - **Why the NO PAD variants:** plain `utf8mb4_bin` on MySQL and MariaDB is PAD SPACE. Under it, `Rock` and `Rock ` compare equal and collide in the unique `(Type, Value)` index, which SQLite accepts.
+  - **New test (all engines):** seed `ItemValues` that differ only by trailing spaces. Both rows are stored, and an equality filter returns exactly one of them.
+- **C3. SQL Server known gaps** (it is Experimental, ADR-0011):
+  - **G1 (`ADR-0006/G1`):** `=` ignores trailing spaces under every collation (ANSI padding). Values that differ only by trailing spaces therefore compare equal and collide in unique indexes.
+  - **G2 (`ADR-0006/G2`):** BIN2 on `nvarchar` orders by UTF-16 code unit. Supplementary characters (emoji, for example) sort before U+E000–U+FFFF, which SQLite does not do.
+  - A UTF-8 `varchar` with `BIN2_UTF8` would fix G2. We did not choose it, because the length of a `varchar(n)` counts bytes, which breaks the `MaxLength`-in-characters bounds of ADR-0009 L1.

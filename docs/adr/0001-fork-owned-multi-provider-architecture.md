@@ -49,3 +49,46 @@ Constraint: we **extend** the existing seam. We do not build a parallel one. Eve
 - `HasFilter` partial indexes are portable to PostgreSQL and SQL Server but not to MySQL. The MySQL ADR will have to drop the filters in its provider conventions.
 - Only one Jellyfin server may use a database at a time. EF takes a migration lock per migration, but code routines take none.
 - `docs/adr/` is for the fork only and never appears in upstream PRs.
+
+## Amendments (multi-target re-check, 2026-10-12)
+
+This re-check covers the full target list in ADR-0011: PostgreSQL, MySQL/MariaDB and SQL Server.
+
+- **M1. Keys.**
+  - `Jellyfin-PostgreSQL`.
+  - `Jellyfin-MySQL`, a single provider for MySQL and MariaDB. The server type comes from the `Options` entry `server-version`, with auto-detection as the fallback.
+  - `Jellyfin-SqlServer`.
+  - An Experimental provider (ADR-0011) logs a Warning in `Initialise`. Every server provider defaults to `NoLock`.
+- **M2. Dialect policy re-checked against four engines: still no dialect or SQL-fragment service.** Every difference the probe found resolves to one of three things: a provider convention, a shared model change (ADR-0005 E, ADR-0009 L1), or an operation-named member.
+  - The full list of additive members, each with a default that keeps SQLite's behaviour:
+    - `IsRetryableWriteConflict` (ADR-0008);
+    - `BeginExplicitIdentityInsertAsync` and `ResetIdentitySequencesAsync` (ADR-0003 S2);
+    - `SupportsTransactionalMigrations` (ADR-0003 S1).
+  - Shared code may read a capability flag, because a flag names an operation, not an engine.
+- **M3. Filtered indexes.** This supersedes the Consequences bullet about MySQL.
+  - None of the four filters is on a `UNIQUE` index (`BaseItemConfiguration.cs:38-39, 41-42, 69-70, 84-85`; the snapshot's only unique indexes are on other tables). Dropping a filter therefore changes index size and query plans, never results.
+  - **PostgreSQL** keeps all four.
+  - **MySQL/MariaDB** have no partial indexes, so a provider convention removes all four filters.
+  - **SQL Server** keeps the three single-predicate filters. A provider convention drops the OR-shaped filter at `:85`, which SQL Server rejects (Msg 156).
+  - The filters use double-quoted identifiers, so SQL Server needs `QUOTED_IDENTIFIER ON`. SqlClient sets it by default, and a test asserts it.
+  - The comment at `:66-68` warns that an unfiltered `PrimaryVersionId` index can mislead the planner. The per-engine benchmark (ADR-0011) covers that risk.
+- **M4. Identifier length.**
+  - Six generated index names are longer than 63 characters; the longest has 81. EF already truncates generated names to the provider's limit. Verified on EF 10.0.11: Npgsql (63) produced `IX_BaseItems_IsFolder_TopParentIdentifierLongName_IsVirtualIte~`, and a collision got `~1`; SQL Server's limit is 128. So PostgreSQL never truncates a name silently.
+  - The problem is that the `~`/`~1` suffix depends on the order in which the model is built. Adding an index can rename an existing one in a later migration.
+  - **Decision:** a shared convention `IdentifierLengthConvention(int maxLength)` in `Jellyfin.Database.Implementations`. Each server provider applies it in `ConfigureConventions` with its own limit: PostgreSQL 63, MySQL/MariaDB 64, SQL Server 128.
+    - A name over the limit becomes its first `maxLength - 9` characters, then `_`, then 8 hex characters of the SHA-256 of the full name.
+    - The result is deterministic and does not depend on order. SQLite is not affected.
+  - Shared `HasDatabaseName` was rejected: SQLite cannot rename an index, so the six `BaseItems` indexes would be dropped and rebuilt.
+  - **Test (model only, per provider):** every table, column, key, foreign key and index name is within the limit, unique per schema, and contains no `~`.
+- **M5. Cascade paths (SQL Server).** SQL Server rejects both of the following (Msg 1785):
+  - the two cascading foreign keys from `AncestorIds` to `BaseItems` (`AncestorIdConfiguration.cs:17-18`);
+  - the self-referencing cascade on `BaseItems.ParentId` (`BaseItemConfiguration.cs:30`).
+
+  The shared delete path does not rely on those cascades:
+  - it collects descendants through `ParentId` and `OwnerId` (`ItemPersistenceService.cs:62-88`);
+  - it deletes `AncestorIds` by both columns and every dependent table explicitly (`:134-155`).
+
+  **Decision:** a SQL Server provider convention sets `AncestorIds.ParentItemId` and `BaseItems.ParentId` to `NoAction`. The shared model and SQLite do not change.
+  - **Test (every engine):** deleting a folder removes its descendants, the `AncestorIds` rows in both directions, and their dependents.
+  - **Residual risk:** a future delete path that relies on these cascades would pass on SQLite and fail on SQL Server. The SQL Server suite catches it.
+- **M6. Unique index with multiple NULLs.** `ImageInfos.UserId` is the only unique index on a nullable column. EF's SQL Server provider adds `[UserId] IS NOT NULL` to it automatically (verified on EF 10.0.11), so no action is needed. A model test asserts it.

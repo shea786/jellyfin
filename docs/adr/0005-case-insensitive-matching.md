@@ -80,3 +80,33 @@ SQL `lower()`/`upper()` appears at `PeopleRepository.cs:55-60,182,477,487,492`, 
   - **Comparisons.** (i) SQLite before and after the LIKE change (P5). (ii) SQLite against Postgres after P8.
   - **Thresholds.** P5 must not regress SQLite by more than 10%; if it does, the rewrite is reworked before PR. `pg_trgm` stays out of v1 unless Postgres is more than 3x slower than SQLite on the `%term%` queries.
   - **Recording.** The plans (`EXPLAIN QUERY PLAN` / `EXPLAIN ANALYZE`) and the numbers go into the PR explainer.
+
+## Amendments (multi-target re-check, 2026-10-12)
+
+- **E1. When option E lands.** It lands as `pr-plan.md` PR 20, at the start of group C0.
+  - That is after PostgreSQL ships, and before any MySQL/MariaDB or SQL Server provider PR.
+  - PostgreSQL ships on D, which is exact under `"C"`.
+  - D is not exact on MySQL, MariaDB or SQL Server: their `LOWER()` folds Unicode even under binary collations, so ADR-0005 test 2 would fail there.
+- **E2. Scope: the smallest set that removes SQL `lower()` on mixed-case columns from the shared queries.**
+  - **`BaseItems.CleanOriginalTitle` = `GetCleanValue(OriginalTitle)`.** This is the same normaliser as `CleanName` (`StringExtensions.cs:159-176`). The search sites (`SqlSearchProvider.cs:125-134`, `TranslateQuery.cs:268,273`) compare it with the clean search term.
+  - **`Peoples.NameLower` = `Name.ToLowerInvariant()`.**
+    - It replaces SQL `lower(Name)` at `PeopleRepository.cs:55-60, 182, 477-492` and the `StartsWith` at `:482`.
+    - A plain index on `NameLower` replaces the expression index `IX_Peoples_NameLower`. Expression indexes are not portable: MySQL has its own functional-index syntax, and SQL Server would need a computed column.
+  - Both columns are maintained by the shared write paths (the mapper and the repository), not by a `SaveChanges` hook.
+  - **ActivityLog stays on D** (`ActivityManager.cs:80-108`). Non-ASCII case folding in the admin activity-log filters is declared engine-defined, and the tests for those filters use ASCII only. Five new columns on a log table are not worth it for one admin filter.
+- **E3. Cost.**
+  - **SQLite migration:**
+    - two `AddColumn` operations. Verified cheap on EF 10.0.11: a plain `ALTER TABLE … ADD`, with no table rebuild. (A change to collation or type *does* rebuild the table.)
+    - one `CreateIndex`;
+    - dropping the raw-SQL expression index.
+  - **Backfill:**
+    - a code routine, in batches, computes the values in .NET, because SQLite's `lower()` cannot.
+    - It touches every `BaseItems` row with an `OriginalTitle` and every `Peoples` row: one full write pass over those rows, with progress logged.
+  - **PostgreSQL:** a migration with the same ID.
+- **E4. Deliberate behaviour changes on every engine, including SQLite.** Tests 2 and 7 flip in PR 20.
+  - `émile` finds `Émile` in OriginalTitle search and in person lookups.
+  - OriginalTitle search ignores diacritics, as `CleanName` search already does.
+  - `/Persons` collapses `Émile`/`émile`, which fixes the known bug in Consequences.
+- **E5. The LIKE escape on MySQL/MariaDB.**
+  - Those engines need the literal written as `'\\'`. The provider's literal generator is responsible for that, and test 3 runs on every engine.
+  - If a provider cannot do it, `LikePatterns.Escape` switches to a character that means nothing in any engine's literal syntax. That changes no SQLite result.

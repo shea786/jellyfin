@@ -77,3 +77,51 @@
   - PG 16 is supported until November 2028, which covers the expected life of the first release that contains Postgres.
   - One floor keeps the test matrix to two images: the floor in the required job and the latest in the nightly job (ADR-0010).
 - Nothing in ADRs 0001-0003 needs a feature newer than 15 (`CREATE DATABASE … STRATEGY` is 15+). If the parity ADRs need 17 (for example the builtin `C.UTF-8` collation provider) or 18 (`LIKE` on nondeterministic collations), the floor is raised **here**, and the test image and `SetPostgresVersion` change with it.
+
+## Amendments (multi-target re-check, 2026-10-12)
+
+**S1. Migration safety net, per engine.** A1 assumed transactional DDL. The probe shows that holds on SQLite, PostgreSQL and SQL Server. On MySQL and MariaDB, DDL always commits implicitly. CockroachDB (rejected) would need `autocommit_before_ddl=false`.
+
+- **SQLite:** transactional DDL plus a file snapshot. Unchanged.
+- **PostgreSQL:** A1, unchanged.
+- **SQL Server:** the same as A1.
+  - `NonTransactionalMigrationOperationWarning` is set to Throw.
+  - It has the same failing-migration test.
+  - The sentinel backup key is `"sqlserver:no-snapshot"`.
+- **MySQL/MariaDB:** a failed migration leaves a partial schema and no history row. The next start re-runs the migration, which then fails with a misleading "already exists" error.
+  - **New additive member:** `bool SupportsTransactionalMigrations => true`. The MySQL provider returns `false`.
+  - **When the flag is false,** `JellyfinMigrationService` does the following around each EF migration (`:546`):
+    - before the migration, it writes `migration-in-progress.json` (migration ID, provider key, UTC time) in the data directory;
+    - after the history row exists, it deletes the file.
+  - **At startup, if the file exists,** the service refuses to migrate. It logs Critical, names the migration, and tells the operator to restore their `mysqldump`/`mariadb-dump` and delete the file.
+  - The marker is a file because after a partial migration the database's state is the thing we cannot trust.
+  - The pre-upgrade Warning is the same as A1.
+  - **Review rule:** a MySQL migration performs one schema operation per statement wherever EF allows.
+  - **Test:** a deliberately failing migration leaves the marker, and the next startup refuses with the message. A successful run leaves no marker.
+
+**S2. Explicit identity values on restore, and reseeding afterwards.** This supersedes the Consequences sentence about reseeding through one member. There are two additive members, and both default to a no-op:
+
+- **`ValueTask<IAsyncDisposable> BeginExplicitIdentityInsertAsync(JellyfinDbContext context, IEntityType entityType, CancellationToken)`.**
+  - SQL Server runs `SET IDENTITY_INSERT <table> ON` on the context's open connection, and `OFF` on dispose.
+  - SQL Server allows only one such table per session, which is why the scope is per table.
+- **`Task ResetIdentitySequencesAsync(JellyfinDbContext context, IEnumerable<IEntityType> entityTypes, CancellationToken)`.**
+  - PostgreSQL: `setval(pg_get_serial_sequence(...), COALESCE(MAX(id), 0) + 1, false)` for each identity column. `TRUNCATE … RESTART IDENTITY` alone is not enough after inserts with explicit IDs.
+  - MySQL/MariaDB, SQL Server and SQLite: no-op, because they advance the identity themselves (probe).
+
+**The restore flow changes** (`BackupService.cs:199-250`). Today it adds every table to one context and saves once (`:249`). The new flow:
+
+1. Open the connection.
+2. **Pre-flight, before `PurgeDatabase`:** deserialise and validate the archive, including the key-length bounds from ADR-0009 L2. A restore that would fail therefore no longer empties the database first.
+3. Purge.
+4. For each table: open the identity scope, add the rows, call `SaveChanges`, close the scope.
+5. Call `ResetIdentitySequencesAsync`.
+
+The work runs in one transaction where the engine allows it. On MySQL, `TRUNCATE` commits implicitly.
+
+**`PurgeDatabase` per engine:**
+
+- **PostgreSQL:** as decided above.
+- **MySQL/MariaDB:** `SET FOREIGN_KEY_CHECKS=0`, then `TRUNCATE` each table, which also resets `AUTO_INCREMENT`.
+- **SQL Server:** `DELETE` in reverse foreign-key order, then `DBCC CHECKIDENT … RESEED`.
+  - `CHECKIDENT` behaves differently on tables that never held a row, so the value must be chosen per case.
+  - **Test, on every engine:** the first identity after a purge is 1, both for tables that held rows and for tables that never did.

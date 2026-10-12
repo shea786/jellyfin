@@ -104,3 +104,30 @@
   - In PR 10 the rename is a **separate commit that does nothing else**: `git mv` plus a one-token base-class change in each of the 33 derived classes, with no other edits in those files. A reviewer can check it with `git show --stat` and `--word-diff`.
   - Logic changes in PR 10 are in other commits.
 - **A3. Integration branch.** The fork-only overlay branch referred to as `multidb/dev` in `pr-plan.md` is `feature/multi-db`.
+
+## Amendments (multi-target re-check, 2026-10-12)
+
+- **H1. A generic backend contract.** Per-test isolation belongs to the backend. The fixture never assumes template databases.
+  - `TestDbProvider` gets one value per target: `Sqlite`, `Postgres`, `MySql`, `MariaDb`, `SqlServer`. Each value is added by the PR that adds its backend.
+  - `ITestDatabaseBackend` exposes `Provider`, `ServerVersion` and `CreateAsync(TestSchemaSource, IInterceptor[], CancellationToken)`, which returns a `TestDatabase`.
+  - Isolation strategy per backend:
+    - **SQLite:** an in-memory database per test instance, or a template copy under `Migrations`. Unchanged.
+    - **PostgreSQL:** a template clone per test instance. Unchanged.
+    - **MySQL, MariaDB, SQL Server: a leased pool.**
+      - Each process builds databases once per `TestSchemaSource`, on demand, and leases one exclusively to each test instance.
+      - When a lease is returned, the database is reset: the provider's `PurgeDatabase` runs, then the model's seed data is re-inserted from `IEntityType.GetSeedData()` (for example the placeholder `BaseItem`).
+      - Tests that change the schema, such as migration tests, ask for `fresh: true`. They get a new database, which is dropped afterwards.
+- **H2. The pool is generic code** in `Jellyfin.Database.Testing`.
+  - It lands in group C0 (`pr-plan.md` PR 22) and tests itself on SQLite file databases, so it exists before any engine needs it.
+  - Self-test: after a lease is returned, every table's row count matches a freshly built database, and the next identity value is 1.
+- **H3. `[ProviderFact(params TestDbProvider[])]` and `[ProviderTheory]`** skip unless the selected provider is in their list, and add `Trait("Provider", …)`.
+  - `PostgresFact` remains only as a one-line subclass, and only if the harness PR has already shipped it.
+- **H4. Environment variables generalise** to `JELLYFIN_TEST_<ENGINE>_IMAGE` and `JELLYFIN_TEST_<ENGINE>_CONNECTIONSTRING`, where `<ENGINE>` is `POSTGRES`, `MYSQL`, `MARIADB` or `SQLSERVER`.
+  - Defaults are the pinned images in ADR-0011.
+  - An external server needs the right to create databases.
+- **H5. Each provider group adds its own backend.** This supersedes the Consequences bullet that said PR 13 adds "the Postgres backend" as the only one.
+  - **Note for the harness work now in progress:** PR 10 must ship the generic contract (H1, H3), even though only SQLite implements it there.
+- **H6 (orchestrator ruling). `Create` stays synchronous:** `TestDatabase Create(TestSchemaSource, IInterceptor[])`, not `CreateAsync`.
+  - The 33 derived fixtures seed in their constructors. An async factory would force sync-over-async blocking in every fixture constructor, or a conversion of all of them to `IAsyncLifetime`, which is churn.
+  - `TestDatabase.Dispose` means "release": SQLite closes the database, Postgres drops it, and a pooled backend returns it to the pool.
+  - The `fresh` flag arrives with the pool (PR 22).

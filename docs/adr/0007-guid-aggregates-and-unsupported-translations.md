@@ -76,3 +76,18 @@
 - **R3. Additional tests (`[PostgresFact]`).**
   - A JSON backup/restore round trip into a freshly migrated database, followed by the grouping query.
   - After restoring a `pg_dump` into an empty database, the grouping query still runs.
+
+## Amendments (multi-target re-check, 2026-10-12)
+
+- **G1. Correction: SQL Server has no `MIN` over `uniqueidentifier`.** The probe on SQL Server 2022 CU27 got an error. Its `uniqueidentifier` order also differs from every other engine. The Consequences bullet that says otherwise is wrong.
+- **G2. Guid storage is chosen per engine so that byte order equals canonical text order,** which is SQLite's order. Native `MIN` then works everywhere except on PostgreSQL. Shared code and SQLite do not change.
+  - **PostgreSQL:** `uuid` with the `jf_uuid_smaller`/`min(uuid)` aggregate, unchanged. This item lives in the PostgreSQL baseline (`pr-plan.md` PR 15). It is not a shared rewrite.
+  - **MySQL/MariaDB:** `binary(16)` in RFC 4122 big-endian byte order, using the provider's Guid-format option. MariaDB's native `UUID` type is not used, because we have not verified its comparison order.
+  - **SQL Server:** `binary(16)` through a provider converter, `Guid.ToByteArray(bigEndian: true)`.
+    - Verified on EF 10.0.11: the grouping query translates to `COALESCE(MIN(CASE … [Id] END), MIN([Id]))` over `binary(16)`.
+    - `uniqueidentifier` was rejected. Both `MIN` and every Guid comparison (for example `PeopleRepository.cs:55`, `other.Id < p.Id`) would follow a different order.
+    - The cost: `binary(16)` is harder to read in SQL tools. Key size is unchanged at 16 bytes.
+  - **CockroachDB** has a native `min(uuid)`, but CockroachDB is rejected.
+- **G3. Tests.**
+  - Tests 1-4 run unchanged on every engine. Test 1 deliberately uses Ids whose .NET order differs from their canonical order, so a wrongly configured Guid format fails it.
+  - A model test per engine asserts the store type of every Guid column.

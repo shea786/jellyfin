@@ -62,3 +62,28 @@
 - unit tests for the PG classifier: 23505, 40001 and 40P01 are true; 23503 and 22001 are false;
 - `[PostgresFact]`: 8 parallel saves of distinct items that share a new genre all succeed and create one row;
 - `[PostgresFact]`: the `RowVersion` columns are `bigint`.
+
+## Amendments (multi-target re-check, 2026-10-12)
+
+- **R1. Correction: which entities carry `RowVersion`.**
+  - The mapped model has four: `User`, `ActivityLog`, `Permission` and `Preference`.
+    - Verified: `IsConcurrencyToken()` appears exactly four times in `Providers.Sqlite/Migrations/JellyfinDbModelSnapshot.cs`, at `:73` (ActivityLog), `:1086` (Permission), `:1115` (Preference) and `:1375` (User).
+  - `Group` (`Entities/Group.cs:48`) and 18 types under `Entities/Libraries/` also implement `IHasConcurrencyToken`, but they are not in the model.
+  - A list that names `Group` as mapped is wrong.
+  - The mechanism is the same on every engine. Store types: PostgreSQL `bigint`, MySQL/MariaDB `int unsigned`, SQL Server `bigint`.
+- **R2. Classifier codes per provider.**
+  - **Retryable:**
+    - MySQL/MariaDB: 1062 (duplicate key), 1213 (deadlock), 1205 (lock wait timeout);
+    - SQL Server: 2627 and 2601 (unique), 1205 (deadlock victim), 1222 (lock request timeout), 3960 (snapshot update conflict).
+  - **Not retryable, used as negative controls in the unit tests:**
+    - foreign-key violations: MySQL 1451/1452, SQL Server 547;
+    - data too long: MySQL 1406, SQL Server 2628/8152.
+- **R3. Every server engine runs at READ COMMITTED, as PostgreSQL does.**
+  - **MySQL/MariaDB** default to REPEATABLE READ, whose gap locks raise the deadlock rate of the `ItemValues` insert race.
+    - The provider sets the session isolation level in a connection interceptor, on open.
+    - The same interceptor sets a strict `sql_mode` (ADR-0009 L2).
+  - **SQL Server's** READ COMMITTED uses locking reads, so readers queue behind library-scan writers.
+    - At `Initialise`, the provider checks `is_read_committed_snapshot_on`. If it is off, the provider logs a Warning recommending `ALTER DATABASE … SET READ_COMMITTED_SNAPSHOT ON`.
+    - The provider does not run that itself, because the command needs exclusive access to the database.
+    - CI databases have it on.
+- **R4. CockroachDB (rejected) for the record:** it runs SERIALIZABLE only, so it would need retry around every transaction, not just the idempotent units of work.

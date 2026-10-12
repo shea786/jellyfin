@@ -62,3 +62,59 @@
 - 1-4 unchanged;
 - `[PostgresFact]`: no column in the model has type `character varying`;
 - `BaseItem_PathOver2704Bytes` asserts that the save succeeds and is marked `KnownGap.On(Postgres, KnownGaps.Adr0009_LongIndexedText)`.
+
+## Amendments (multi-target re-check, 2026-10-12)
+
+This supersedes the Consequences bullet that promised "per-column lengths and a shared truncation policy for display columns".
+
+- **Context from the probe.** 27 of the 64 indexes contain an unbounded string:
+  - four unique indexes: `ItemValues(Type, Value)`, `CustomItemDisplayPreferences(UserId, ItemId, Client, Key)`, `ApiKeys.AccessToken`, `DeviceOptions.DeviceId`;
+  - three primary keys: `BaseItemProviders.ProviderId`, `PeopleBaseItemMap.Role`, `UserData.CustomDataKey`.
+
+  Engine behaviour on such indexes:
+  - MySQL rejects unbounded text in an index (error 1170) and any key over 3072 bytes.
+  - MariaDB silently indexes a 768-character prefix and silently turns `UNIQUE` into `HASH`.
+  - SQL Server cannot index `nvarchar(max)`. Its key limit is 1700 bytes for nonclustered indexes and 900 bytes for clustered keys (PKs are clustered by default).
+  - PostgreSQL's btree limit is 2704 bytes.
+- **L1. Every string in a key or index belongs to one of two classes.** A model test enforces this.
+  - **Key-class** strings get a shared `[MaxLength]`.
+    - Verified on EF 10.0.11: a change that only adds `MaxLength` produces **zero** SQLite migration operations, so there is no table rebuild. `HasPendingModelChanges` stays false. Existing snapshots are refreshed without a migration file.
+    - Each bound fits the tightest engine. Worst-case sizes: `nvarchar` is 2 bytes per character, utf8mb4 is 4 bytes per character, and a Guid is 16 bytes.
+
+    | Column | Max chars | Binding limit |
+    |---|---|---|
+    | `UserData.CustomDataKey` (PK) | 256 | SQL Server clustered key: 32 + 512 ≤ 900 bytes |
+    | `PeopleBaseItemMap.Role` (PK) | 400 | SQL Server clustered key: 32 + 800 ≤ 900 bytes |
+    | `BaseItemProviders.ProviderId` (PK) | 128 | natural size (provider names) |
+    | `ItemValues.Value` (unique, with `int Type`) | 512 | SQL Server 4 + 1024 ≤ 1700; MySQL 4 + 2048 ≤ 3072; PostgreSQL ≤ 2704 |
+    | `CustomItemDisplayPreferences.Key` (unique) | 256 | SQL Server 32 + 64 + 512 ≤ 1700 |
+    | `ApiKeys.AccessToken` (unique), `Devices.AccessToken` | 128 | natural size (32-hex tokens) |
+    | `DeviceOptions.DeviceId` (unique) | 256 | matches `Devices.DeviceId` (`Device.cs:78`) |
+    | `BaseItems.Type` | 256 | natural size (CLR type names) |
+    | `BaseItems.MediaType` | 64 | natural size (enum names) |
+
+  - **Text-class** strings are marked with a shared annotation, `IsUnboundedIndexedText()`. Each provider decides how to store and index them (L3).
+    - The text-class columns: `BaseItems.Path`, `Name`, `SortName`, `CleanName`, `SeriesName`, `PresentationUniqueKey` and `SeriesPresentationUniqueKey`; `Peoples.Name` and `NameLower` (from ADR-0005 E2); `ItemValues.CleanValue`; `BaseItemProviders.ProviderValue`; `MediaStreamInfos.Language`.
+- **L2. Over-length values are handled the same way on every engine, including SQLite.**
+  - **Metadata-sourced keys (`Role`, `ItemValues.Value`)** are truncated to their bound at ingest by the shared persistence code, *before* de-duplication. Uniqueness is then judged on the stored value everywhere. This is a small change on SQLite.
+  - **All other key-class values** are rejected by a shared `EnforceKeyLengths()` step in `SaveChanges`, next to `SanitizeStrings()`. The exception names the entity, the property and the bound.
+    - These values are server-generated or client-supplied identifiers, and real values are far below the bounds.
+    - This is new on SQLite: for example, a client that sends a `DeviceId` longer than 256 characters now gets an error.
+    - The step checks only added or modified values, so existing rows stay readable.
+  - **Invariant:** every row that SQLite accepts can be restored on every Supported engine. The restore pre-flight (ADR-0003 S2) reports violations before anything is purged.
+  - **The database never truncates silently.**
+    - MySQL/MariaDB sessions use a strict `sql_mode` (ADR-0008 R3). Without it, a server in non-strict mode truncates silently.
+    - MariaDB's silent prefix and HASH conversions cannot happen: the key-class bounds fit, and the text-class prefixes are explicit. A test checks `SHOW INDEX` for an explicit `Sub_part` and `Index_type` `BTREE`.
+- **L3. How each provider stores text-class columns:**
+  - **PostgreSQL:** `text`. The G1 gap above 2704 bytes is unchanged.
+  - **MySQL/MariaDB:** `longtext`. A provider convention computes explicit prefix lengths so that each index fits in 3072 bytes, so no write ever fails because of length.
+  - **SQL Server:** `nvarchar(4000)`. Index creation warns about the 1700-byte limit, and a write whose actual key exceeds it fails. That is KnownGap `ADR-0009/G2`, in the same family as G1. Values over 4000 characters also fail.
+  - **Non-indexed strings** stay unbounded on every server: `text`, `longtext` or `nvarchar(max)`. "Lengths are not enforced" still holds for them, so no display-column truncation policy is needed.
+- **L4. Hashed key columns rejected for now** (for example `PathHash` for equality lookups on `Path`).
+  - Cost: an `AddColumn` plus a full backfill of `BaseItems` on SQLite, and every `Path` predicate (`TranslateQuery.cs:328`, `ItemPersistenceService.cs:575,661`) would have to filter on the hash as well.
+  - We revisit if G1 or G2 appears in real libraries.
+- **L5. Tests:**
+  - `EnforceKeyLengths` rejects a value one character over its bound and accepts one at the bound.
+  - Ingest truncates `Role` and `Value`, and two roles that are equal after truncation map to one row.
+  - Model conformance (ADR-0011): every index fits each engine's budget.
+  - SQLite `HasPendingModelChanges` stays false.

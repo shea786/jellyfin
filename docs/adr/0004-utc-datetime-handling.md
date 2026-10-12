@@ -64,3 +64,19 @@
   - **Engines that keep finer precision.** MySQL stores `datetime(6)`, which is microseconds. SQL Server stores `datetime2(7)`, which keeps ticks. Neither breaks the tolerant comparison.
 - **R2. Test 1 asserts microsecond equality instead.** It asserts `Kind == Utc` and that the value equals the input, compared to the microsecond, through the same helper. It does **not** assert exact tick equality.
 - **R3. Re-sweep before the shared-UTC PR is marked ready.** The sweep for stored-vs-file-system time equality is repeated, and the results go in the PR explainer.
+
+## Amendments (multi-target re-check, 2026-10-12)
+
+- **T1. Still shared.** The shared converter (R1: no truncation) and the tolerant comparison stay shared, in `pr-plan.md` PRs 02 and 03.
+- **T2. Column types are per provider:**
+  - PostgreSQL: `timestamptz`.
+  - MySQL/MariaDB: `datetime(6)`, never `timestamp`. `timestamp` rejects `0001-01-01` and converts time zones.
+  - SQL Server: `datetime2(7)`, never `datetime`. `datetime` rejects `0001-01-01`.
+  - `datetime` on MySQL and `datetime2` on SQL Server carry no zone and are never converted, so these engines need no session time-zone setting.
+- **T3. Sentinels are per provider.** `DateTime.MaxValue` ends in `.9999999`.
+  - **MySQL** rounds it up into year 10000 and fails (error 1441).
+  - **MariaDB** truncates it, so it reads back as something other than `MaxValue`.
+  - **Decision:** the MySQL/MariaDB provider adds a converter. It writes `MaxValue` as `9999-12-31 23:59:59.999999` and reads any value at or above that as `MaxValue`.
+  - **SQL Server's** `datetime2(7)` round-trips `MaxValue` exactly.
+  - **PostgreSQL** keeps the infinity mapping.
+  - The rule "no date arithmetic on sentinels" still holds. Test 2 runs on every engine.

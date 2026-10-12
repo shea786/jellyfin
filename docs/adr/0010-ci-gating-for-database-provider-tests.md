@@ -55,3 +55,26 @@
 - The Postgres job duplicates the non-DB tests inside the DB-bearing projects. They are cheap, and duplicating them is simpler than maintaining trait filters.
 - Coverage from the Postgres job is not merged into the matrix report at first.
 - Locally, `dotnet test` behaves as before. `dotnet test --settings tests/postgres.runsettings` reproduces the CI job.
+
+## Amendments (multi-target re-check, 2026-10-12)
+
+- **CI1. One matrix job, `run-tests-db`, replaces the single `run-tests-postgres` job.**
+  - `strategy.matrix.include` holds one entry per server engine, each with a provider name, a pinned image and a required flag.
+  - The entries:
+    - `Postgres` (Supported, required);
+    - `MySql`, `MariaDb` and `SqlServer` (Experimental, not required while Experimental; see ADR-0011).
+  - `fail-fast: false`. Each entry runs the same project loop with a TRX file per provider. `JELLYFIN_TEST_DB_PROVIDER` and `JELLYFIN_TEST_<ENGINE>_IMAGE` come from the matrix entry.
+  - Promoting a provider to Supported flips its required flag. That is a repository setting, not code.
+- **CI2. One generic sentinel.**
+  - `[ProviderFact(Postgres, MySql, MariaDb, SqlServer)] DatabaseBackend_IsLive` asserts that the selected backend's server version is at or above the floor: PostgreSQL 16, MySQL 8.4, MariaDB 11.4, SQL Server 2022.
+  - The TRX step checks that this test passed, in every job.
+- **CI3. SQL Server's entry:**
+  - it needs amd64 (`ubuntu-latest` is amd64) and at least 2 GB of RAM;
+  - it sets `ACCEPT_EULA=Y` and `MSSQL_PID=Developer`;
+  - the image pull stays a separate step, so registry failures show as infrastructure failures;
+  - startup is slower, so its timeout is 40 minutes.
+- **CI4. How it arrives upstream.**
+  - PR 17 in `pr-plan.md` introduces the matrix with only the Postgres entry.
+  - The last PR of each engine group adds that engine's entry (PRs 26 and 29).
+  - The nightly job becomes a matrix of each engine's newest LTS or minor release.
+- **CI5. Pinning.** Images are pinned by tag in this ADR and in ADR-0011, and by digest in the workflow. Renovate updates both.
