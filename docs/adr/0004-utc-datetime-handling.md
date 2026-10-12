@@ -104,3 +104,19 @@
   - On a machine whose local zone is UTC, which includes GitHub runners, `Local` and `Unspecified` values already equal their UTC value. There a1 only proves that values are read back with `Kind == Utc`.
   - The `ToUniversalTime()` step is only exercised under a non-UTC zone. It was verified with `TZ=America/New_York` and `Europe/London`.
   - Adding a CI job per zone is not justified for one converter.
+
+## Amendments (step 03 review, 2026-10-12)
+
+- **R7. `EqualsToMicrosecond` treats timestamps at most 10 ticks apart as equal, inclusive.**
+  - It compares ticks and ignores `Kind`, like `DateTime.Equals`.
+  - 10 ticks is the same tolerance that test a1 uses.
+  - A database that truncates to the microsecond differs from the written value by 0 to 9 ticks. One that rounds differs by at most 5. A real file change is many orders of magnitude larger.
+- **R8. Consequence (ii) is wrong and is withdrawn. On SQLite, the year-only sort key never depended on the server's time zone.**
+  - Verified by capturing the generated SQL under `America/New_York`, `Asia/Tokyo` and `UTC`.
+    - Before step 03, every zone produced the same literal: `strftime(..., '0001-01-01 00:00:00', CAST("ProductionYear" - 1 AS TEXT) || ' years')`.
+    - After step 03, every zone produced `'2000-01-01 00:00:00'` and `- 2000`.
+  - The reason is that EF inlines the `DateTime.MinValue` constant as a literal inside the `strftime` translation, and the value converter is not applied to it.
+    - The step 03 worker's explanation was that `ToUniversalTime()` clamps `MinValue`. That is wrong.
+    - Under `America/New_York`, `DateTime.MinValue.ToUniversalTime()` is `0001-01-01T04:57:00Z`, the zone's local mean time offset. It never reaches the query.
+  - The worker evaluated the old and new expressions in SQLite for every year from -3000 to 20000. All 23,001 keys are identical, including NULL for years from 10000 up.
+  - So step 03 changes nothing on SQLite. Its only purpose is portability: Npgsql maps `DateTime.MinValue` to `-infinity`, and `-infinity` plus an interval stays `-infinity`, so every year-only item would tie. That is the Sentinels point in Context. The commit message and the explainer must say so, and must not claim a SQLite fix.
