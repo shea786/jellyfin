@@ -80,3 +80,16 @@
   - **SQL Server's** `datetime2(7)` round-trips `MaxValue` exactly.
   - **PostgreSQL** keeps the infinity mapping.
   - The rule "no date arithmetic on sentinels" still holds. Test 2 runs on every engine.
+
+## Amendments (PR 02 re-sweep, 2026-10-12)
+
+- **R4. Result of the R3 re-sweep.**
+  - `BaseDynamicImageProvider.cs:299` is still the only exact equality between a stored timestamp and a file-system time. PR 03 fixes it.
+  - Seven more comparisons against the `DateTime.MinValue`/`default` sentinel were found. They are harmless on every provider, because the sentinels round-trip exactly (test a2):
+    - `Folder.cs:239`
+    - `BaseItemMapper.cs:307,310`
+    - `MetadataService.cs:95`
+    - `ChannelManager.cs:1187`
+    - `PeopleValidator.cs:76`
+    - `ArtistsValidator.cs:87`
+  - Line numbers are on `multidb/02-shared-utc-converter`. Some of the R1 references have shifted since R1 was written.
