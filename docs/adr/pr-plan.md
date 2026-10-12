@@ -1,4 +1,4 @@
-# Upstream PR plan (stacked)
+# Step plan (one upstream PR)
 
 This file stays in the fork and never goes upstream. The user writes all PR titles and bodies, because Jellyfin forbids LLM-written direct communication. Nothing here is PR text.
 
@@ -9,20 +9,20 @@ This file stays in the fork and never goes upstream. The user writes all PR titl
   - Group 0 starts from `upstream/master`.
   - Groups C and D both start from the tip of C0 and do not depend on each other, so their order can swap (ADR-0011).
   - Rows marked *independent* start from `upstream/master` and can be carved out at any time.
-- **Every PR:**
+- **Every step:**
   - builds warning-free (`TreatWarningsAsErrors`);
   - passes the existing matrix;
   - leaves SQLite fully working.
-- **Portability PRs (group 0 and group C0):**
+- **Portability steps (group 0 and group C0):**
   - contain only provider-neutral changes, plus SQLite tests that pin the behaviour and follow the rules in ADR-0002;
   - add no references to any server engine.
-- **SQLite migrations.** The **SQLite migration** column marks the only PR that carries one. Every other PR is SQLite-neutral: no migration file, and `HasPendingModelChanges` stays false.
+- **SQLite migrations.** The **SQLite migration** column marks the only step that carries one. Every other step is SQLite-neutral: no migration file, and `HasPendingModelChanges` stays false.
 
 **Local TDD.**
 
 - The fork-only integration branch `feature/multi-db` carries the whole stack, the `docs/adr/` commits and work in progress.
-- The test infrastructure and the providers are built there first, so a portability test can go red and then green on every engine before its PR is carved out.
-- On `feature/multi-db`, portability tests derive from `JellyfinDbTestFixture`. In the carved group 0 PRs they derive from `SqliteDbTestFixture`, a one-token difference. PR 10 performs the rename.
+- The test infrastructure and the providers are built there first, so a portability test can go red and then green on every engine before its step branch is cut.
+- On `feature/multi-db`, portability tests derive from `JellyfinDbTestFixture`. On the group 0 step branches they derive from `SqliteDbTestFixture`, a one-token difference. Step 10 performs the rename.
 
 **Numbering changed on 2026-10-12** (old number → new):
 
@@ -42,7 +42,7 @@ This file stays in the fork and never goes upstream. The user writes all PR titl
 
 ## Group 0: Portability
 
-These PRs reconcile with the parity task list P1-P7. P8 is a Postgres item and moved to group B.
+These steps reconcile with the parity task list P1-P7. P8 is a Postgres item and moved to group B.
 
 | # | Branch | Scope | Key files | Tests added | Depends on | SQLite migration |
 |---|---|---|---|---|---|---|
@@ -91,7 +91,7 @@ These PRs reconcile with the parity task list P1-P7. P8 is a Postgres item and m
 |---|---|---|---|---|---|---|
 | 23 | `multidb/23-efcore-10.0.12` | Bump every EF Core package and `HealthChecks.EntityFrameworkCore` to 10.0.12. Npgsql 10.0.3 still fits. | `Directory.Packages.props:36-45` | The existing suites | upstream/master (*independent*; carve early) | no |
 | 24 | `multidb/24-mysql-provider` | `Jellyfin.Database.Providers.MySql` (Microting 10.0.12) and its members. Conventions: collation by server type (ADR-0006 C2), `binary(16)` Guid (ADR-0007 G2), `datetime(6)` with the `MaxValue` clamp (ADR-0004 T3), `longtext` with prefix lengths (ADR-0009 L3), all filters removed (ADR-0001 M3), identifier limit 64, interceptor for strict mode and READ COMMITTED (ADR-0008 R3), retry codes, purge, `SupportsTransactionalMigrations = false`. Backends: `MySql`, `MariaDb` (pool). **Not registered.** | New project, `Directory.Packages.props` (`Microting.EntityFrameworkCore.MySql`, `Testcontainers.MySql`/`MariaDb` 4.16.0) | Member and classifier tests; the suite on both servers, with gaps recorded; model conformance | 22, 23 | no |
-| 25 | `multidb/25-mysql-migrations-and-registration` | Baseline `20200101000000_InitialCreate` covering through PR 20's migration; register `Jellyfin-MySQL` with the Experimental warning | Provider `Migrations/`, `ServiceCollectionExtensions.cs:24-27` | Migration tests (a)-(c) on both servers; safety-net test (S1); explicit `SHOW INDEX` prefixes | 24 | no |
+| 25 | `multidb/25-mysql-migrations-and-registration` | Baseline `20200101000000_InitialCreate` covering through step 20's migration; register `Jellyfin-MySQL` with the Experimental warning | Provider `Migrations/`, `ServiceCollectionExtensions.cs:24-27` | Migration tests (a)-(c) on both servers; safety-net test (S1); explicit `SHOW INDEX` prefixes | 24 | no |
 | 26 | `multidb/26-ci-mysql-mariadb` | Add `MySql` and `MariaDb` matrix entries, not required | `.github/workflows/ci-tests.yml` | The sentinel on both | 25 | no |
 
 ## Group D: SQL Server (Experimental, fork-only unless maintainers ask; ADR-0011 R2)
@@ -106,21 +106,62 @@ These PRs reconcile with the parity task list P1-P7. P8 is a Postgres item and m
 
 There is no separate CI group, because each engine's CI arrives with it:
 
-- **PR 17** creates the matrix job (Postgres, required).
-- **PRs 26 and 29** each add an entry, not required while the engine is Experimental.
+- **step 17** creates the matrix job (Postgres, required).
+- **steps 26 and 29** each add an entry, not required while the engine is Experimental.
 - **Promotion** to Supported (ADR-0011) flips the required flag in repository settings.
-- **The nightly matrix** (newest LTS or minor of each engine) is added with PR 17 and extended in PRs 26 and 29.
+- **The nightly matrix** (newest LTS or minor of each engine) is added with step 17 and extended in steps 26 and 29.
 
-## Amendments (PR 01 on Postgres, 2026-10-12)
+## Amendments (step 01 on Postgres, 2026-10-12)
 
-Source: a scratch run of PR 01's tests on Postgres over the harness. SQLite passed 32 of 32. On Postgres, 25 failed and all of them fell within existing gaps: `GuidAggregates` (42883) for 15 rows, `StringCollation` for 7 rows. `PeopleRepositoryDuplicateNameTests` passes.
+Source: a scratch run of step 01's tests on Postgres over the harness. SQLite passed 32 of 32. On Postgres, 25 failed and all of them fell within existing gaps: `GuidAggregates` (42883) for 15 rows, `StringCollation` for 7 rows. `PeopleRepositoryDuplicateNameTests` passes.
 
 - **B1. The harness stack carries the Group 0 tests.**
-  - The harness branch is rebased onto the Group 0 tip as each Group 0 PR lands, starting with PR 01.
+  - The harness branch is rebased onto the Group 0 tip as each Group 0 step is merged, starting with step 01.
   - On each rebase, the rename commit (A2) also switches the new test classes to `JellyfinDbTestFixture`.
-  - The gap-ledger commit (PR 13) wraps their failing spans. For PR 01 that is 10 `KnownGap.On` sites, about +52/-26 over 6 files.
-  - The `BaseItemRepositoryGroupingTests` conflict is resolved once: PR 01's test bodies, inside the harness wrapper.
+  - The gap-ledger commit (step 13) wraps their failing spans. For step 01 that is 10 `KnownGap.On` sites, about +52/-26 over 6 files.
+  - The `BaseItemRepositoryGroupingTests` conflict is resolved once: step 01's test bodies, inside the harness wrapper.
 - **B2. `GuidAggregates` masks the ordering assertions on Postgres.**
-  - Every `GetItemList` query that groups by presentation key fails on the missing `min(uuid)` before any ordering assertion runs. So on Postgres the 16 `NullOrder`, `StringOrder` and `NameRange` rows from PR 01 test nothing about ordering until PR 15 ships the aggregate.
-  - **PR 14** cannot cite those rows as evidence for the `"C"` collation or the `NULLS FIRST`/`LAST` generator. Its ADR-0006 `[ProviderFact]` checks must exercise ordering through a query path that does not group by presentation key. The PR 14 author confirms that path exists before writing the tests.
-  - **PR 15** is where those rows first run their assertions on Postgres. PR 15 reports every row that leaves `GuidAggregates` by name: either it passes, or the gap it moved to. "`GuidAggregates` closed" is not "ordering verified". The PR 15 explainer says so.
+  - Every `GetItemList` query that groups by presentation key fails on the missing `min(uuid)` before any ordering assertion runs. So on Postgres the 16 `NullOrder`, `StringOrder` and `NameRange` rows from step 01 test nothing about ordering until step 15 ships the aggregate.
+  - **step 14** cannot cite those rows as evidence for the `"C"` collation or the `NULLS FIRST`/`LAST` generator. Its ADR-0006 `[ProviderFact]` checks must exercise ordering through a query path that does not group by presentation key. The step 14 author confirms that path exists before writing the tests.
+  - **step 15** is where those rows first run their assertions on Postgres. step 15 reports every row that leaves `GuidAggregates` by name: either it passes, or the gap it moved to. "`GuidAggregates` closed" is not "ordering verified". The step 15 explainer says so.
+
+## Amendments (single upstream PR, 2026-10-12)
+
+The user changed the delivery strategy. This supersedes "small, stacked, independently mergeable PRs" wherever it appears in this file and in the ADRs.
+
+- **S1. One upstream PR.**
+  - The complete multi-database feature is built on the fork. When it is finished, it goes to jellyfin/jellyfin as one PR.
+  - Nothing goes upstream piecemeal.
+  - "PR NN" in the ADRs and explainers written before this date means step NN of this plan.
+- **S2. Steps stay the units of work.** Groups 0, A, B, C0, C and D keep their order and numbering. For each step:
+  - it gets its own branch, cut from the step before it;
+  - tests come first;
+  - it passes the gates: Code Reviewer, Debug and Release builds with no new warnings (ADR-0002 H7), and green tests;
+  - it gets an explainer on `feature/multi-db`;
+  - it is merged into `feature/multi-db` with `git merge --no-ff`.
+  - Merging is never a reason to rebase or amend a step branch.
+  - If a merged step later needs a review fix, its branch is fixed (it is unpushed) and the new tip is merged again. `feature/multi-db` history is never rewritten.
+- **S3. The commit series is the deliverable.**
+  - Reviewers will read the final PR commit by commit, and Jellyfin's LLM policy asks for large changes to be split into small, manageable commits.
+  - Every commit must build and pass its tests on its own. Each has a clear imperative subject and a body that explains why.
+  - A commit body may name the engine that motivates a change, for example PostgreSQL, but must not claim a SQLite fix that does not exist.
+- **S4. Building the final branch.**
+  - `multidb/upstream` is built by replaying the step branches' commits, in step order, onto the current `upstream/master`. It has no merge commits and none of the fork-only `docs/adr` commits.
+  - That linear series is what goes upstream, when the user says so.
+  - X1 (`fix/migration-setup-premark`) is an ordinary unit, merged like the rest, and its commit stays in the series. Maintainers may ask for unrelated fixes to be split out; the user decides at submission time.
+- **S5. Upstream sync.**
+  - Fetch `upstream` before starting every step, and at least between steps.
+  - If `upstream/master` has moved:
+    - rebase the step branch in progress (unpushed and unmerged, so this is safe);
+    - merge `upstream/master` into `feature/multi-db` so conflicts surface early.
+  - Merged step branches are rebased only when `multidb/upstream` is built (S4).
+  - Report to the coordinator any upstream change to `src/Jellyfin.Database`, to the migrations, or to files the steps touch.
+- **S6. Explainers.**
+  - Write one per step, as now.
+  - At the end, write an overall explainer for the whole PR, as study material and not PR text. It covers:
+    - the architecture overview;
+    - the behaviour changes on SQLite;
+    - the test evidence;
+    - known limitations and the experimental tiers;
+    - a suggested reading order of the commits.
+- **S7. Unchanged.** No pushing to origin or upstream, and no PR, until the user says so. The user writes all PR text.
