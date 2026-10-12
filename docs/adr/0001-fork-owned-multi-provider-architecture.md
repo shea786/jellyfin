@@ -101,3 +101,8 @@ This re-check covers the full target list in ADR-0011: PostgreSQL, MySQL/MariaDB
 - **U2. Adopted as they are.**
   - #18264 `EnsureExistingDatabaseAsync` is provider-neutral.
   - #18196 gives `RefreshStatistics` a no-op default and skips it on an empty library. That matches our rule for additive members.
+
+## Amendments (step 09 re-check, 2026-10-13)
+
+- **P1. The existing SQLite-era routines are not rewritten; step 09 is dropped.** The routines with engine-specific SQL are `MigrateActivityLogDb` (`sqlite_sequence`), `MigrateUserDb`, `MigrateDisplayPreferencesDb`, `MigrateAuthenticationDb`, `MigrateLibraryDb` (all reading the legacy SQLite files) and `StripEmbeddedLinkedChildren` (`json_remove`/`json_valid`). Every one of them has `RunMigrationOnSetup = false` (the attribute default; only five routines set it to true, none of them with raw SQL), so a fresh install on any engine pre-marks them and never runs them. The X1 fix makes that pre-marking reliable. The only other way to reach a non-SQLite database is backup, switch, restore, and the restore carries the archive's routine history (step 08), so these routines are already marked there too. They can only ever run on SQLite, as today. Rewriting them would change upstream migration code for no behaviour on any engine.
+  - **Rule for new routines:** a routine added from now on must be provider-neutral (EF queries and .NET-side filtering, as step 06's `RemoveNulFromItemKeys` does), or use an operation-named provider member per the dialect policy above. Reviewers check it; the step 15 test that a fresh PostgreSQL install pre-marks every `RunMigrationOnSetup = false` routine guards the existing ones.
