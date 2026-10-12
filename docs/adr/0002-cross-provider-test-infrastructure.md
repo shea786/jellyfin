@@ -156,3 +156,8 @@
 - **H12. Rejected review findings.**
   - The copyright line in the new provider's `Properties/AssemblyInfo.cs` matches all four sibling projects word for word. It stays, for consistency.
   - The SQLite run keeps 15 skipped rows for Postgres-only tests. They carry a clear reason, and ADR-0010 accepts this.
+- **H13. Harness rebase onto steps 01-03 (review PASS WITH NITS, tip `e99c1afbc9`).**
+  - The async overload is `KnownGap.OnAsync`. With one shared name, a synchronous `() => throw ...` body binds to the `Func<Task>` overload and its exception is lost. `On_ThrowExpressionBody_PropagatesTheException` fails to compile if the shared name comes back.
+  - The opposite direction is not guarded: `KnownGap.On(gap, () => SomethingAsync())` binds to `Action` and drops the Task. No call site does this. It is accepted and stated in the harness explainer; a guard (trap test or analyzer rule) is follow-up work if an async span is ever wrapped.
+  - Spans that hold two assertions (`ItemValueStringTests` Tags and Genres, `PeopleRepositoryNameOrderTests` Items and count, ascending then descending in `NullOrder` and `StringOrder`) can hide the second assertion on Postgres while the first fails. Accepted: SQLite runs every assertion, and a gap that starts passing fails the test, which forces a re-check.
+  - `OnAsync` has no production caller yet. It stays, with its self-tests, for the async repository tests in later steps.
