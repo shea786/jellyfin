@@ -137,6 +137,8 @@
 - **H7. Every check builds and tests in Debug as well as Release.**
   - `Directory.Build.props` enables `AnalysisMode=AllEnabledByDefault` and the `Jellyfin.CodeAnalysis` analyzers only in Debug. A Release-only check missed CA2100 in `PostgresTestBackend`.
   - A bare `dotnet build`, `dotnet test` or IDE build is Debug, so a Debug failure breaks every contributor.
+  - The Debug bar is 0 errors and no warning in any file the branch changes. Upstream's own Debug build has 211 warnings (merge-base `61f9a9df23`), all in projects these PRs do not touch, so the sorted warning lines must match the base's. Unrelated files are never edited to silence them. Release stays at 0 warnings.
+  - Upstream CI runs the tests in Release (`ci-tests.yml`) and builds `Jellyfin.Server` in Debug (`ci-compat.yml`), so the analyzers already gate production code there. A Debug build of the whole solution also covers the test projects.
   - SQL built from identifiers we generate (`CREATE`/`DROP DATABASE`) cannot take parameters. It is quoted and suppressed with a justification at the method, not file-wide.
 - **H8. A gap covers only the assertion whose expected value depends on the provider.**
   - A behavioural gap matches any assertion failure, so a whole-body span hides unrelated regressions. The final gate showed this: a filtering expectation that was wrong everywhere failed on SQLite and was silently skipped on Postgres.
