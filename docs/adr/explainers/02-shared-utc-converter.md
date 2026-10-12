@@ -38,7 +38,10 @@ It moves the rule "store dates as UTC and read them back marked as UTC" out of t
   - `DateTime.MinValue` and `MaxValue` as UTC round-trip exactly.
   - Each value is written and read back through two nullable properties on `BaseItem` (`DateCreated`, `PremiereDate`) and one non-nullable property on `ActivityLog` (`DateCreated`).
 - **Model test (commit 2).** `Model_DateTimeProperties_UseSharedUtcConverter` asserts that every `DateTime` and `DateTime?` property in the model uses `UtcDateTimeConverter`.
-- **A provider override reaches all 21 properties.** A throwaway provider that registered only `Properties<DateTime>()` with another converter changed all 21. Without it all 21 use the shared converter. That probe was not committed.
+- **A provider override reaches all 21 properties.** A throwaway provider that registered only `Properties<DateTime>()` with another converter changed all 21 (7 `DateTime`, 14 `DateTime?`). Without it, all 21 use the shared converter. `HasPendingModelChanges` was false in both cases.
+  - Checked twice, once by the implementer and once independently against `86a8fcc6ed`.
+  - Control: putting back the removed `Properties<DateTime?>()` registration made the same override reach only 7 of 21. That is the defect review found, and the probe catches it.
+  - The probe was not committed. If a maintainer wants this guarded permanently, it can become a test.
 
 ## Why the `ActivityLog` coverage is in
 
