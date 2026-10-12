@@ -85,7 +85,7 @@
 
 - **R4. Result of the R3 re-sweep.**
   - `BaseDynamicImageProvider.cs:299` is still the only exact equality between a stored timestamp and a file-system time. PR 03 fixes it.
-  - Seven more comparisons against the `DateTime.MinValue`/`default` sentinel were found. They are harmless on every provider, because the sentinels round-trip exactly (test a2):
+  - Seven more comparisons against the `DateTime.MinValue`/`default` sentinel were found. They are harmless on every provider, because `Utc`-kind `MinValue`/`MaxValue` round-trip exactly (test a2). A sentinel written with `Unspecified` or `Local` kind is shifted by the zone offset on write, exactly as it was before PR 02, so this is not a regression:
     - `Folder.cs:239`
     - `BaseItemMapper.cs:307,310`
     - `MetadataService.cs:95`
@@ -93,3 +93,14 @@
     - `PeopleValidator.cs:76`
     - `ArtistsValidator.cs:87`
   - Line numbers are on `multidb/02-shared-utc-converter`. Some of the R1 references have shifted since R1 was written.
+
+## Amendments (PR 02 review, 2026-10-12)
+
+- **R5. Only `Properties<DateTime>()` is registered.** This supersedes the Decision text that names both `Properties<DateTime>()` and `Properties<DateTime?>()`.
+  - A `Properties<DateTime>()` convention already applies to `DateTime?` properties.
+  - Registering `DateTime?` separately is harmful. A provider that overrides only `Properties<DateTime>()`, such as the MySQL `MaxValue` converter (T3), would then change the non-nullable properties and leave the nullable ones on the shared converter.
+  - Provider overrides register `Properties<DateTime>()` only.
+- **R6. What test a1 proves depends on the machine's time zone.**
+  - On a machine whose local zone is UTC, which includes GitHub runners, `Local` and `Unspecified` values already equal their UTC value. There a1 only proves that values are read back with `Kind == Utc`.
+  - The `ToUniversalTime()` step is only exercised under a non-UTC zone. It was verified with `TZ=America/New_York` and `Europe/London`.
+  - Adding a CI job per zone is not justified for one converter.
