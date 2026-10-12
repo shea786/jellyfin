@@ -190,6 +190,7 @@ The user changed the delivery strategy. This supersedes "small, stacked, indepen
 | #17449 | open issue | `--restore-archive` crashes on a fresh instance | Covered by step 08 (ADR-0003 U1) |
 | X1 (ours) | published on origin | Premark fix sent upstream on its own | S8 |
 | X2 (ours) | local, not pushed | Premiere date read from the broadcast date tag (`ProbeResultNormalizer.cs:1658`) | S10 |
+| EF Core pins (step 23) | `b9411fe8e8` bumps EF, Sqlite, HealthChecks and four Microsoft.Extensions pins to 10.0.12 | Upstream's dependency bot may bump these first | At each sync and before `multidb/upstream`: if upstream is already at or past 10.0.12, drop step 23; if it moved some pins only, re-cut it against the new pins. The MySQL provider needs EF >= 10.0.12. |
 | Our code routines | step 06 adds `20261012120000_RemoveNulFromItemKeys` | Upstream's latest routine at `61f9a9df23` is `20260915120000_MigrateRatingLevels` | Before `multidb/upstream` is built, every routine the series adds must sort after upstream's latest routine; if upstream adds a later one, re-date ours. Check how each interleaves with EF migrations on SQLite and that it is pre-marked on a fresh PostgreSQL install. |
 
   - Also re-run the scan's searches at each sync: `git grep -i -E "postgres|npgsql|mysql|mariadb"` on `upstream/master`, plus the commit log under `src/Jellyfin.Database`, `Jellyfin.Server.Implementations/Item`, `Jellyfin.Server/Migrations` and `FullSystemBackup` since the last sync.
