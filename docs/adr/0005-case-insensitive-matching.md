@@ -109,6 +109,23 @@ SQL `lower()`/`upper()` appears at `PeopleRepository.cs:55-60,182,477,487,492`, 
     - the behaviour of the default on a case-sensitive `LIKE` is covered for real when the same tests run on PostgreSQL (the harness rebase onto step 05 must show them passing there).
   - **Checklists.** The `LikeExpression` is built with a null type mapping. It works in `WHERE` on SQLite; its use in a projection, on PostgreSQL (step 14) and on SQL Server (step 27) is checked there.
 
+- **R5. Final step 05 benchmark and the S5 ruling (tip `a5474e7943`, same tree as `39c720353f`).** Quiet machine (load 2.0-6.7), interleaved before/after/before/after, lowest median and lowest p95 per side, ms:
+
+  | Query | Median before -> after | p95 before -> after | Rows |
+  |---|---|---|---|
+  | S1 search | 30.09 -> 31.02 (+3.1%) | 31.26 -> 32.27 (+3.2%) | same |
+  | S2 search, no match | 29.17 -> 30.01 (+2.9%) | 30.13 -> 31.30 (+3.9%) | same |
+  | S3 NameContains | 22.86 -> 23.39 (+2.3%) | 23.63 -> 24.49 (+3.7%) | same |
+  | S4 NameContains, mixed case | 21.88 -> 22.96 (+4.9%) | 22.97 -> 24.24 (+5.5%) | 25 -> 36, intended (equals S3) |
+  | S5 NameContains `école` | 23.53 -> 25.71 (+9.2%) | 24.68 -> 27.15 (+10.0%) | same |
+  | S6 SearchTerm | 22.41 -> 22.69 (+1.2%) | 23.36 -> 24.05 (+2.9%) | same |
+  | S7 People prefix | 324.80 -> 25.72 (-92%) | 330.67 -> 27.29 | same |
+  | S8 activity filter | 2.96 -> 3.17 (+0.21 ms) | 3.07 -> 3.31 | same |
+
+  - Plans are unchanged except S7, which now scans the covering index `IX_Peoples_NameLower`.
+  - **S5 is accepted, on its measured cause.** Its p95 lands on the 10% line (+10.008%), consistently across four after-runs. The SQL differs from before in two places only: `ESCAPE '\'` (no measurable cost) and the `instr` needle, `ecole` instead of `école`. That needle is the deliberate `NameContains` fix: `CleanName` has no diacritics, so `école` could never match it. On the seed, `instr(CleanName, 'ecole')` costs about 1 ms more per 100k rows than `instr(CleanName, 'école')`, because a needle starting with a common byte (`e`) takes more partial comparisons than one starting with `0xC3`. The old code's S5 was cheap only because its `CleanName` check could never succeed. The cost is the ordinary cost of searching for a term starting with `e`, not a cost of the LIKE rewrite, which is within +1% to +5% everywhere else.
+  - The commit messages state the D measurement as "27 to 51 percent slower", the figure measured.
+
 ## Amendments (multi-target re-check, 2026-10-12)
 
 - **E1. When option E lands.** It lands as `pr-plan.md` PR 20, at the start of group C0.
