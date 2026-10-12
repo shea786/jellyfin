@@ -143,6 +143,7 @@
     - TMDb: Movie `:141` and `:246`, Series `:305`, Season `:79`;
     - MusicBrainz: Album `:136` and `:285`, Artist `:103` and `:149`;
     - `PhotoProvider.cs:112`, `AudioFileProber.cs:390`.
+  - **Added by the X2 fix:** `ProbeResultNormalizer.cs:1658` now parses the `WM/MediaOriginalBroadcastDateTime` value with `AdjustToUniversal`, which leaves a value with no zone designator as `Unspecified`. The shared converter then treats it as server-local time, the same east-of-UTC shift as step 04. Before X2 the broadcast date never reached `PremiereDate`, so this path is newly reachable. A value with a `Z` or an offset gives `Kind == Utc` and is not affected. X2 deliberately keeps upstream's parse style and fixes only the wrong variable. Whether such a value is a calendar date or a local time depends on the source (WTV recordings), so it is checked with the others.
   - Before anything is fixed, each needs checking against what its source returns. A TMDb date is a calendar date, but EXIF and audio tags can carry a real time.
 - **U3. A separate upstream bug, not ours to fix in the series.**
   - `ProbeResultNormalizer.cs:1658` checks for the `WM/MediaOriginalBroadcastDateTime` tag, then parses `year` instead of `premiereDateString`. So the broadcast date is never used: a bare year such as "2010" fails `DateTime.TryParse`.
