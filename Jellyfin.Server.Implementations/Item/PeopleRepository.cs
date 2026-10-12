@@ -111,15 +111,23 @@ public class PeopleRepository(IDbContextFactory<JellyfinDbContext> dbProvider, I
     /// <inheritdoc />
     public void UpdatePeople(Guid itemId, IReadOnlyList<PersonInfo> people)
     {
+        var namedPeople = new List<PersonInfo>(people.Count);
         foreach (var person in people)
         {
-            person.Name = person.Name.Trim();
-            person.Role = person.Role?.Trim() ?? string.Empty;
+            var hadNul = person.Name.Contains('\0', StringComparison.Ordinal);
+            person.Name = person.Name.RemoveNullCharacters().Trim();
+            person.Role = person.Role?.RemoveNullCharacters().Trim() ?? string.Empty;
+
+            // A name that is empty or whitespace once its NUL characters are removed does not name anyone.
+            if (!hadNul || person.Name.Length > 0)
+            {
+                namedPeople.Add(person);
+            }
         }
 
         // Project the values every comparison below needs once, so neither the case folding nor the
         // enum formatting is repeated per candidate.
-        var credits = people.Select(e => (Person: e, LoweredName: e.Name.ToLowerInvariant(), PersonType: e.Type.ToString(), LoweredRole: e.Role.ToLowerInvariant()));
+        var credits = namedPeople.Select(e => (Person: e, LoweredName: e.Name.ToLowerInvariant(), PersonType: e.Type.ToString(), LoweredRole: e.Role.ToLowerInvariant()));
 
         // multiple metadata providers can provide the _same_ credit; dedupe case-insensitively.
         // The role is part of the key because one person can hold several credits of the same type
@@ -471,25 +479,32 @@ public class PeopleRepository(IDbContextFactory<JellyfinDbContext> dbProvider, I
             query = query.Where(e => e.BaseItems!.Any(w => w.ItemId == filter.ItemId && w.ListOrder <= filter.MaxListOrder.Value));
         }
 
-        if (!string.IsNullOrWhiteSpace(filter.NameContains))
+        var nameContains = filter.NameContains?.RemoveNullCharacters();
+        if (!string.IsNullOrWhiteSpace(nameContains))
         {
-            var nameContainsUpper = filter.NameContains.ToUpper();
+            var nameContainsUpper = nameContains.ToUpper();
             query = query.Where(e => e.Name.ToUpper().Contains(nameContainsUpper));
         }
 
-        if (!string.IsNullOrWhiteSpace(filter.NameStartsWith))
+        var nameStartsWith = filter.NameStartsWith?.RemoveNullCharacters();
+        if (!string.IsNullOrWhiteSpace(nameStartsWith))
         {
-            query = query.Where(e => e.Name.ToLower().StartsWith(filter.NameStartsWith.ToLowerInvariant()));
+            var nameStartsWithLower = nameStartsWith.ToLowerInvariant();
+            query = query.Where(e => e.Name.ToLower().StartsWith(nameStartsWithLower));
         }
 
-        if (!string.IsNullOrWhiteSpace(filter.NameLessThan))
+        var nameLessThan = filter.NameLessThan?.RemoveNullCharacters();
+        if (!string.IsNullOrWhiteSpace(nameLessThan))
         {
-            query = query.Where(e => e.Name.ToLower().CompareTo(filter.NameLessThan.ToLowerInvariant()) < 0);
+            var nameLessThanLower = nameLessThan.ToLowerInvariant();
+            query = query.Where(e => e.Name.ToLower().CompareTo(nameLessThanLower) < 0);
         }
 
-        if (!string.IsNullOrWhiteSpace(filter.NameStartsWithOrGreater))
+        var nameStartsWithOrGreater = filter.NameStartsWithOrGreater?.RemoveNullCharacters();
+        if (!string.IsNullOrWhiteSpace(nameStartsWithOrGreater))
         {
-            query = query.Where(e => e.Name.ToLower().CompareTo(filter.NameStartsWithOrGreater.ToLowerInvariant()) >= 0);
+            var startsOrGreaterLower = nameStartsWithOrGreater.ToLowerInvariant();
+            query = query.Where(e => e.Name.ToLower().CompareTo(startsOrGreaterLower) >= 0);
         }
 
         return query;
