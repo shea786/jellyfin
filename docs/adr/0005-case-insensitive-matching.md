@@ -89,6 +89,13 @@ SQL `lower()`/`upper()` appears at `PeopleRepository.cs:55-60,182,477,487,492`, 
   - **Plans.** Query plans are compared, not only timings. The People prefix lookup must not lose an index it uses today (`IX_Peoples_NameLower` or another).
   - **Limits, stated in the explainer.** Search runs with no user, so no access filtering; code migrations are not applied to the seed.
 
+- **R3. Step 05 rulings (worker report, tip `f93a6b4aae`).**
+  - **The ban has two blind files.** `SqlSearchProvider.cs` and `BaseItemRepository.TranslateQuery.cs` already disable RS0030 for the whole file, for the banned `Guid` operators. The ban cannot catch a two-argument `Like` there. Accepted: narrowing those pragmas is an unrelated change to upstream files. Every other file is covered, the step leaves no two-argument `Like` anywhere, and the commit body states the gap.
+  - **New file-level CA1304/CA1311 suppressions** in `SqlSearchProvider.cs` and `ActivityManager.cs`, for `ToLower()` inside EF expressions. Accepted: `PeopleRepository.cs` and `BaseItemRepository.TranslateQuery.cs` already do the same, and the culture overloads do not translate to SQL.
+  - **`NameContains` with a term that cleans to empty** (such as `-`) matches `OriginalTitle` only. Without the guard, `CleanName.Contains("")` would match every row. This keeps today's result for such terms. It is a behaviour decision and goes in the explainer.
+  - **The wildcard branches** use the ASCII-lowered pattern for both `CleanName` and `OriginalTitle`. `CleanName` is already lower-case, so this only makes an upper-case wildcard term match. Explainer.
+  - **Remaining gaps, unchanged and stated in the explainer:** `SqlSearchProvider` strips diacritics from the term, so `ÉMILE`/`émile` find nothing there (pre-existing). A non-ASCII upper-case `SortName` does not match a lowered term, because SQLite's `lower()` folds ASCII only. Step 20 (option E) fixes both.
+
 ## Amendments (multi-target re-check, 2026-10-12)
 
 - **E1. When option E lands.** It lands as `pr-plan.md` PR 20, at the start of group C0.
