@@ -133,3 +133,18 @@
 ## Amendments (upstream reconciliation, 2026-10-12)
 
 - **U1.** The `DateTime.MinValue` to `null` sentinel convention comes from upstream #14347. Our sentinel rules (R4, Sentinels) build on it. #18278 is handled in R9.
+- **U2. Other date-only producers are follow-up work, not part of the series.** The step 04 worker found the same kind of date shift in other producers. These are existing bugs that users can see on SQLite. The shared converter handles them the same way on every provider, so they are not a parity problem, and fixing them in the series would be an unrelated change. They stay out of the series unless one of them behaves differently on a server engine. Line numbers are at step 03, `bb1f10913b`.
+  - **Local converted to UTC, which moves the date on servers east of UTC:**
+    - `LibraryManager.cs:3360`, `new DateTime(y, m, d).ToUniversalTime()`;
+    - `TmdbEpisodeProvider.cs:186` and `TmdbMissingEpisodeProvider.cs:571`, `SpecifyKind(Local).ToUniversalTime()`;
+    - `TmdbMovieProvider.cs:79`, `TmdbPersonProvider.cs:127`, `TmdbSeriesProvider.cs:149,166`, `.ToUniversalTime()`.
+  - **Kind left `Unspecified`:** `AudioFileProber.cs:403`, `OmdbItemProvider.cs:199-201`, `OpfReader.cs:131-134`.
+  - **Kind not checked:**
+    - TMDb: Movie `:141` and `:246`, Series `:305`, Season `:79`;
+    - MusicBrainz: Album `:136` and `:285`, Artist `:103` and `:149`;
+    - `PhotoProvider.cs:112`, `AudioFileProber.cs:390`.
+  - Before anything is fixed, each needs checking against what its source returns. A TMDb date is a calendar date, but EXIF and audio tags can carry a real time.
+- **U3. A separate upstream bug, not ours to fix in the series.**
+  - `ProbeResultNormalizer.cs:1658` checks for the `WM/MediaOriginalBroadcastDateTime` tag, then parses `year` instead of `premiereDateString`. So the broadcast date is never used: a bare year such as "2010" fails `DateTime.TryParse`.
+  - The bug dates back to Emby (2015). The line was last touched in `f8ffccae7f` (2026-07-04), which kept the wrong variable.
+  - No upstream PR or issue mentions the tag. It is a candidate for a small standalone upstream fix, like X1, and the user decides.
