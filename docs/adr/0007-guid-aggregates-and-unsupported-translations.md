@@ -91,3 +91,17 @@
 - **G3. Tests.**
   - Tests 1-4 run unchanged on every engine. Test 1 deliberately uses Ids whose .NET order differs from their canonical order, so a wrongly configured Guid format fails it.
   - A model test per engine asserts the store type of every Guid column.
+
+## Amendments (PR 01 findings, 2026-10-12)
+
+- **P1. The premise of test 1 is corrected.** On SQLite, database order does **not** differ from .NET `Guid.CompareTo` order.
+  - SQLite stores canonical upper-case text, and .NET compares the fields unsigned, field by field. Both give canonical order.
+  - The order that differs is the memcmp order of the little-endian `Guid.ToByteArray()` bytes. The Ids in test 1 (`0fffffff-…-000000000000` vs `10000000-…-0000000000ff`) still serve their purpose, because they are ordered differently under little-endian bytes.
+  - So test 1 does not catch a SQLite problem. It catches a provider that stores Guids as **little-endian** `binary(16)`, which is the default of EF's `GuidToBytesConverter` and of Pomelo/Microting's `LittleEndianBinary16`.
+- **P2. Each Guid format choice in G2 must be checked when its provider lands.**
+  - MySQL/MariaDB: confirm that the chosen `MySqlGuidFormat` writes RFC 4122 big-endian bytes.
+  - SQL Server: the converter must call `ToByteArray(bigEndian: true)` and `new Guid(bytes, bigEndian: true)`.
+  - Test 1 is the acceptance check in both cases.
+- **P3. Test a4 (no client evaluation) is dropped.** EF Core already throws when a predicate, ordering or grouping cannot be translated. Only the final projection may run on the client, and it does not decide which representative is chosen. A test for a4 would only re-test EF.
+- **P4. Coverage gap noted, not fixed.** The `GroupBySeriesPresentationUniqueKey` + presentation-key branch of `ApplyGroupingFilter` cannot be reached through the public repository API, so PR 01 covers only the plain `Min(Id)` path. Whether that branch is dead code is for a separate PR.
+- **P5. Non-ASCII uppercase range bounds are left out of PR 01.** Today they would pin a SQLite-only result (ASCII-only `lower()`). PR 20 adds them when it changes case folding (ADR-0005 E4).
