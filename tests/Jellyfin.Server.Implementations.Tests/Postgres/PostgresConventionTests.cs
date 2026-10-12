@@ -38,6 +38,7 @@ public sealed class PostgresConventionTests : DatabaseTestFixture
                 JOIN pg_class c ON c.oid = a.attrelid
                 JOIN pg_type t ON t.oid = a.atttypid
                 WHERE c.relnamespace = current_schema()::regnamespace
+                  AND m.amname = 'btree'
                   AND c.relkind = 'r'
                   AND a.attnum > 0
                   AND NOT a.attisdropped
@@ -53,6 +54,7 @@ public sealed class PostgresConventionTests : DatabaseTestFixture
                 JOIN pg_type t ON t.oid = a.atttypid
                 JOIN pg_collation o ON o.oid = a.attcollation
                 WHERE c.relnamespace = current_schema()::regnamespace
+                  AND m.amname = 'btree'
                   AND c.relkind = 'r'
                   AND a.attnum > 0
                   AND NOT a.attisdropped
@@ -330,5 +332,44 @@ public sealed class PostgresConventionTests : DatabaseTestFixture
             Assert.Equal([withoutDate, early, late], ascending);
             Assert.Equal([late, early, withoutDate], descending);
         }
+    }
+
+    [ProviderFact(TestDbProvider.Postgres)]
+    public async Task Indexes_SortNullsFirstOnNullableColumns_AndKeepTheDefaultOrderOnTheOthers()
+    {
+        await using var context = CreateDbContext();
+
+        // Bit 0 of indoption is DESC and bit 1 is NULLS FIRST. A column that cannot be null needs the default order,
+        // which is also the one of the index behind a key, and one that can be null needs NULLS FIRST. A column of an
+        // expression is taken as nullable.
+        var deviating = await context.Database
+            .SqlQueryRaw<string>(
+                """
+                SELECT c.relname || '.' || (o.ordinality - 1) AS "Value"
+                FROM pg_index i
+                JOIN pg_class c ON c.oid = i.indexrelid
+                JOIN pg_am m ON m.oid = c.relam
+                CROSS JOIN LATERAL unnest(i.indoption::int2[], i.indkey::int2[]) WITH ORDINALITY AS o(option, attnum, ordinality)
+                LEFT JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = o.attnum
+                WHERE c.relnamespace = current_schema()::regnamespace
+                  AND m.amname = 'btree'
+                  AND o.ordinality <= i.indnkeyatts
+                  AND (o.option & 3) <> CASE WHEN a.attnotnull IS TRUE THEN 0 ELSE 2 END
+                """)
+            .ToListAsync();
+        var indexCount = await context.Database
+            .SqlQueryRaw<int>(
+                """
+                SELECT count(*)::int AS "Value"
+                FROM pg_index i
+                JOIN pg_class c ON c.oid = i.indexrelid
+                JOIN pg_am m ON m.oid = c.relam
+                WHERE c.relnamespace = current_schema()::regnamespace
+                  AND m.amname = 'btree'
+                """)
+            .SingleAsync();
+
+        Assert.True(indexCount > 20, $"Only {indexCount} indexes were found.");
+        Assert.Empty(deviating);
     }
 }
