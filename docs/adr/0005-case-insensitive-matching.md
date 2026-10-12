@@ -81,6 +81,14 @@ SQL `lower()`/`upper()` appears at `PeopleRepository.cs:55-60,182,477,487,492`, 
   - **Thresholds.** P5 must not regress SQLite by more than 10%; if it does, the rewrite is reworked before PR. `pg_trgm` stays out of v1 unless Postgres is more than 3x slower than SQLite on the `%term%` queries.
   - **Recording.** The plans (`EXPLAIN QUERY PLAN` / `EXPLAIN ANALYZE`) and the numbers go into the PR explainer.
 
+- **R2. Benchmark protocol for step 05 (from the baseline at `51c81ac7ee`).** Tooling lives in `/tmp/s05-bench` (`run.sh <commit>`, `compare.py`); the seed is 100k items, 300k people, about 600k people maps and 10k activity rows, migrated through the real EF migrations.
+  - **Quiet machine.** The baseline ran with a load average of 11-21 on 20 cores from parallel builds, and one 3 ms query doubled from load alone. The comparison runs are made when no other build or test job is running.
+  - **Interleaved runs.** Before and after are run alternately in one window (before, after, before, after). Each metric is compared on the lowest median and the lowest p95 per side.
+  - **Threshold.** For a query whose baseline median is 10 ms or more, the 10% rule applies. Below 10 ms (the ActivityManager filter, about 3 ms), the rule is an absolute bound: flag a difference over 1 ms. Ten percent of 3 ms is inside the noise.
+  - **Result sets.** Counts must be identical except where step 05 changes behaviour on purpose: `NameContains` with mixed case now matches as the lower-case term does (so the mixed-case query returns the same items as the lower-case one), and `NameContains` with a diacritic now matches through `CleanName`. Each changed count is checked against the intended behaviour, not flagged as a regression.
+  - **Plans.** Query plans are compared, not only timings. The People prefix lookup must not lose an index it uses today (`IX_Peoples_NameLower` or another).
+  - **Limits, stated in the explainer.** Search runs with no user, so no access filtering; code migrations are not applied to the seed.
+
 ## Amendments (multi-target re-check, 2026-10-12)
 
 - **E1. When option E lands.** It lands as `pr-plan.md` PR 20, at the start of group C0.
