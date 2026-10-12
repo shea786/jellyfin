@@ -110,3 +110,11 @@ SQL `lower()`/`upper()` appears at `PeopleRepository.cs:55-60,182,477,487,492`, 
 - **E5. The LIKE escape on MySQL/MariaDB.**
   - Those engines need the literal written as `'\\'`. The provider's literal generator is responsible for that, and test 3 runs on every engine.
   - If a provider cannot do it, `LikePatterns.Escape` switches to a character that means nothing in any engine's literal syntax. That changes no SQLite result.
+
+## Amendments (upstream reconciliation, 2026-10-12)
+
+- **U1. Precedent for option E.** Upstream #16919 added `NormalizedUsername`, a column the application normalises and stores. That is the pattern option E uses, so we cite it as precedent.
+- **U2. Call sites, updated.**
+  - #18223 added another implicit-case `LIKE` at `SqlSearchProvider.cs:134` (the `SortName` branch). It joins the step 05 list.
+  - #18265 fixed `PeopleRepository.cs:487` and `:492` (`CompareTo`), but not the `StartsWith` at `:482`, which lowers only the argument. That one stays ours in step 05.
+- **U3. Watch #16301.** It adds a SQLite-only `CleanValue` user-defined function for non-ASCII search. It is not portable and conflicts with option E in `TranslateQuery.cs`. If it moves forward, the user may want to raise option E in the upstream discussion.

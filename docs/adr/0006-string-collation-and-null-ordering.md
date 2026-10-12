@@ -99,3 +99,7 @@
   - **G1 (`ADR-0006/G1`):** `=` ignores trailing spaces under every collation (ANSI padding). Values that differ only by trailing spaces therefore compare equal and collide in unique indexes.
   - **G2 (`ADR-0006/G2`):** BIN2 on `nvarchar` orders by UTF-16 code unit. Supplementary characters (emoji, for example) sort before U+E000–U+FFFF, which SQLite does not do.
   - A UTF-8 `varchar` with `BIN2_UTF8` would fix G2. We did not choose it, because the length of a `varchar(n)` counts bytes, which breaks the `MaxLength`-in-characters bounds of ADR-0009 L1.
+
+## Amendments (upstream reconciliation, 2026-10-12)
+
+- **U1.** Nothing upstream addresses collation or NULL ordering. Watch #18299 (seeded random sort, `EF.Functions.Random`) and check it when the Postgres ordering translation is written in step 14.

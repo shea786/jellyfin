@@ -87,3 +87,12 @@
     - The provider does not run that itself, because the command needs exclusive access to the database.
     - CI databases have it on.
 - **R4. CockroachDB (rejected) for the record:** it runs SERIALIZABLE only, so it would need retry around every transaction, not just the idempotent units of work.
+
+## Amendments (upstream reconciliation, 2026-10-12)
+
+- **U1. `WriteConflictRetry` follows the shape of open upstream #17119.**
+  - #17119 makes the ItemValues get-or-create safe under parallel saves. When a re-read shows the missing rows now exist, it retries the whole `UpdateOrInsertItems` unit of work.
+  - An upstream reviewer rejected `ON CONFLICT` there as not portable to MariaDB. We take the same position: retry the unit of work after a re-read, and use no engine-specific upsert.
+  - Step 07 does not build a second ItemValues retry. If #17119 lands first, step 07 uses its retry rather than wrapping it.
+- **U2. Existing ad-hoc retries stay as they are**: `DisplayPreferencesManager.cs:45-50` and `:123`, `ItemPersistenceService.cs:201`, `SessionManager.cs:274`. Moving them onto `WriteConflictRetry` would be an unrelated change, so step 07 only does it where it already edits that method. The rest are listed as a possible follow-up.
+- **U3. Watch #17115.** It reworks SQLite pessimistic locking and touches the locking classes that the `NoLock` default relies on.

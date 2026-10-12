@@ -108,3 +108,8 @@
 - **P6. Corrections from the PR 01 review.**
   - **The `ByName.cs:247-252` inconsistency in Context is withdrawn.** That branch picks its representative in memory with `ThenBy(e => e.Id)`. .NET `Guid.CompareTo` follows canonical order, so both `ByName` branches agree. That branch pins no database behaviour, so no test targets it.
   - **Test Ids must invert canonical order under both byte orders that cause trouble.** The pair to use is `0fffffff-0000-0000-0000-0000000000ff` (canonically lower) and `10000000-0000-0000-0000-000000000000`. It sorts the opposite way under little-endian `ToByteArray()` memcmp **and** under SQL Server `uniqueidentifier` order, which compares the last 6 bytes first. The earlier pair inverted only the little-endian order, so it would not have caught a SQL Server provider that keeps native `uniqueidentifier` (G2).
+
+## Amendments (upstream reconciliation, 2026-10-12)
+
+- **U1.** Nothing upstream addresses Guid `MIN`/`MAX`.
+- **U2. `WhereOneOrMany` is untested on Postgres.** `JellyfinQueryHelperExtensions.WhereOneOrMany` builds `Enumerable.Contains` over `EF.Parameter`. EF translates it per provider: `json_each` on SQLite, `= ANY(@p)` on Postgres. That should be portable, but nothing tests it. Step 14 adds a Postgres query test covering lists of zero, one and many values.

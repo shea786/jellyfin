@@ -129,3 +129,7 @@
   - The step 03 gate found this. Before relying on our own design, check what upstream has merged; see the upstream scan amendment.
 - **R10. Addition to R4.** `20250420230000_RefreshInternalDateModified.cs:103` compares `writeTime != itemModificationTime` exactly. It is a one-shot migration routine: on a microsecond store it refreshes a few extra rows once, and it is harmless. It is left unchanged and mentioned in the step 03 explainer.
 - **R11. Test a3 pins "start of the year".** It seeds dated neighbours at 2009-12-31 23:59:59Z and 2010-01-01 00:00:01Z around the year-only 2010 item. A base date other than 1 January then fails it, which the step 03 gate showed the first version did not catch.
+
+## Amendments (upstream reconciliation, 2026-10-12)
+
+- **U1.** The `DateTime.MinValue` to `null` sentinel convention comes from upstream #14347. Our sentinel rules (R4, Sentinels) build on it. #18278 is handled in R9.

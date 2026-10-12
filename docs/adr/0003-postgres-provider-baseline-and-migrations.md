@@ -125,3 +125,16 @@ The work runs in one transaction where the engine allows it. On MySQL, `TRUNCATE
 - **SQL Server:** `DELETE` in reverse foreign-key order, then `DBCC CHECKIDENT … RESEED`.
   - `CHECKIDENT` behaves differently on tables that never held a row, so the value must be chosen per case.
   - **Test, on every engine:** the first identity after a purge is 1, both for tables that held rows and for tables that never did.
+
+## Amendments (upstream reconciliation, 2026-10-12)
+
+- **U1. The restore hook uses upstream's name. This supersedes the name `ResetIdentitySequencesAsync` in S2.**
+  - Open upstream #17901, "Fix/restore generated ids", adds `Task CompleteDatabaseRestoreAsync(JellyfinDbContext dbContext, CancellationToken cancellationToken) => Task.CompletedTask` to `IJellyfinDatabaseProvider`, for realigning sequences after a restore. Its author tested it against a PostgreSQL plugin. It depends on #17899, "Roll back failed database restores", which validates the archive first and restores in a transaction.
+  - We use exactly that name and signature. If theirs lands first, ours merges into it or disappears.
+  - Step 08 starts by re-checking #17899 and #17901. Whatever has merged is adopted, and our step only adds what is still missing: preserving history rows (S2) and `BeginExplicitIdentityInsertAsync` for SQL Server. Pre-flight before the purge is dropped from our step if #17899 already provides it.
+  - Open issue #17449: `--restore-archive` crashes on a brand-new instance because no schema exists yet. Step 08 covers that case with a test, or explains in its explainer why not.
+- **U2. Baseline inputs confirmed or added.**
+  - `StripEmbeddedLinkedChildren` (`json_remove`/`json_valid`) is confirmed as SQLite-only SQL, handled in step 09.
+  - The latest SQLite migration is still `20261002210711_MakeOwnerIdIndexesPartial`.
+  - The `IX_Peoples_NameLower` index is created by raw SQL in a code routine. The Postgres baseline creates it as a functional index on `lower("Name")`, and the routine must be provider-neutral or a no-op when the index exists (step 09).
+- **U3. Watch #18091, "Enforce database integrity".** It adds foreign keys on `TrickplayInfos` and `MediaSegments` and a new SQLite migration, turns on `PRAGMA foreign_keys`, and splits `DeleteItems` out of `DeleteItem`. If it lands, the Postgres baseline is regenerated and the `CoversThroughSqliteMigration` pin moves.

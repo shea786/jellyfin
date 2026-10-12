@@ -169,3 +169,18 @@ The user changed the delivery strategy. This supersedes "small, stacked, indepen
   - `fix/migration-setup-premark` is published on origin at `f8bf42be78`. Its commits are `2d9b57c52d`, the fix, and `f8bf42be78`, the CONTRIBUTORS.md entry.
   - The branch is never rewritten. A change requested in upstream review goes on as a new commit, and the coordinator and the user handle that branch. Every new tip is merged into `feature/multi-db` again.
   - When `multidb/upstream` is built (S4), drop both commits if the PR has merged upstream by then, and keep them if it hasn't.
+- **S9. Upstream watch list.** Check it at every upstream sync (S5), and again before `multidb/upstream` is built. A PR here that merges changes our work as noted. Recorded from the read-only scan at `61f9a9df23`.
+
+| Upstream | State at scan | What it does | Our response |
+|---|---|---|---|
+| #17899 | open | Roll back failed database restores; the archive is validated first | Step 08 adopts it if merged and drops our duplicate pre-flight (ADR-0003 U1) |
+| #17901 | open, depends on #17899 | `CompleteDatabaseRestoreAsync(JellyfinDbContext, CancellationToken)` on the provider | We use exactly this member (ADR-0003 U1) |
+| #17119 | open | ItemValues get-or-create retry under parallel saves | `WriteConflictRetry` follows its shape, with no second ItemValues retry (ADR-0008 U1) |
+| #18091 | open | Foreign keys on TrickplayInfos/MediaSegments, new migration, `PRAGMA foreign_keys` | Regenerate the PG baseline and move the migration pin (ADR-0003 U3) |
+| #16301 | open | SQLite-only `CleanValue` function for non-ASCII search | Conflicts with option E (ADR-0005 U3) |
+| #18299 | open | Seeded random sort, `EF.Functions.Random` | Check in step 14 (ADR-0006 U1) |
+| #17115 | open | SQLite pessimistic-lock rework | Re-check the locking default (ADR-0008 U3) |
+| #17449 | open issue | `--restore-archive` crashes on a fresh instance | Covered by step 08 (ADR-0003 U1) |
+| X1 (ours) | published on origin | Premark fix sent upstream on its own | S8 |
+
+  - Also re-run the scan's searches at each sync: `git grep -i -E "postgres|npgsql|mysql|mariadb"` on `upstream/master`, plus the commit log under `src/Jellyfin.Database`, `Jellyfin.Server.Implementations/Item`, `Jellyfin.Server/Migrations` and `FullSystemBackup` since the last sync.

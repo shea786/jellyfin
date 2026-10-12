@@ -92,3 +92,12 @@ This re-check covers the full target list in ADR-0011: PostgreSQL, MySQL/MariaDB
   - **Test (every engine):** deleting a folder removes its descendants, the `AncestorIds` rows in both directions, and their dependents.
   - **Residual risk:** a future delete path that relies on these cascades would pass on SQLite and fail on SQL Server. The SQL Server suite catches it.
 - **M6. Unique index with multiple NULLs.** `ImageInfos.UserId` is the only unique index on a nullable column. EF's SQL Server provider adds `[UserId] IS NOT NULL` to it automatically (verified on EF 10.0.11), so no action is needed. A model test asserts it.
+
+## Amendments (upstream reconciliation, 2026-10-12)
+
+- **U1. Upstream history and coexistence.** Nothing upstream at `61f9a9df23` duplicates this architecture.
+  - #13451 added a PgSql provider. It was removed in the #13589 refactor, and #14556, an MsSql provider, was closed unmerged. Neither has code we can reuse, but both show the maintainers' intent.
+  - The plugin-provider path (#14171) stays supported. In-tree providers sit beside it, and the provider key and `database.xml` are unchanged.
+- **U2. Adopted as they are.**
+  - #18264 `EnsureExistingDatabaseAsync` is provider-neutral.
+  - #18196 gives `RefreshStatistics` a no-op default and skips it on an empty library. That matches our rule for additive members.
