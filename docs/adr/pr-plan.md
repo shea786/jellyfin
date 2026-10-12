@@ -165,3 +165,7 @@ The user changed the delivery strategy. This supersedes "small, stacked, indepen
     - known limitations and the experimental tiers;
     - a suggested reading order of the commits.
 - **S7. Unchanged.** No pushing to origin or upstream, and no PR, until the user says so. The user writes all PR text.
+- **S8. X1 is the exception and goes upstream now, as its own PR.** The user decided this on 2026-10-12.
+  - `fix/migration-setup-premark` is published on origin at `f8bf42be78`. Its commits are `2d9b57c52d`, the fix, and `f8bf42be78`, the CONTRIBUTORS.md entry.
+  - The branch is never rewritten. A change requested in upstream review goes on as a new commit, and the coordinator and the user handle that branch. Every new tip is merged into `feature/multi-db` again.
+  - When `multidb/upstream` is built (S4), drop both commits if the PR has merged upstream by then, and keep them if it hasn't.
