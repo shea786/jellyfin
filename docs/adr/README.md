@@ -11,14 +11,12 @@ These records hold the design decisions of this Jellyfin fork for first-class mu
 | [0001](0001-fork-owned-multi-provider-architecture.md) | Fork-owned multi-provider architecture | Accepted |
 | [0002](0002-cross-provider-test-infrastructure.md) | Cross-provider test infrastructure | Accepted |
 | [0003](0003-postgres-provider-baseline-and-migrations.md) | Postgres provider baseline and migrations | Accepted |
-| 0004 | UTC date/time handling | Pending (DB parity) |
-| 0005 | Case-insensitive text and collation | Pending (DB parity) |
-| 0006 | NULL ordering | Pending (DB parity) |
-| 0007 | Guid MIN aggregates | Pending (DB parity) |
-| 0008 | Concurrency tokens and locking | Pending (DB parity) |
-| 0009 | String length limits | Pending (DB parity) |
+| [0004](0004-utc-datetime-handling.md) | UTC date/time storage, precision and sentinel values | Accepted |
+| [0005](0005-case-insensitive-matching.md) | Case-insensitive matching and LIKE semantics | Accepted |
+| [0006](0006-string-collation-and-null-ordering.md) | String collation and deterministic ordering, including NULLs | Accepted |
+| [0007](0007-guid-aggregates-and-unsupported-translations.md) | Aggregates over Guid and other provider-sensitive translations | Accepted |
+| [0008](0008-concurrency-locking-and-retry.md) | Concurrency tokens, locking strategy and retry policy | Accepted |
+| [0009](0009-column-length-and-text-sanitisation.md) | Column length limits and text sanitisation | Accepted |
 | [0010](0010-ci-gating-for-database-provider-tests.md) | CI gating for database provider tests | Accepted |
-
-The titles of 0004-0009 are provisional until the DB-parity ADRs are written.
 
 Supporting document: [pr-plan.md](pr-plan.md), the ordered, stacked upstream PR plan.
