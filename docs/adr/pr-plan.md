@@ -110,3 +110,17 @@ There is no separate CI group, because each engine's CI arrives with it:
 - **PRs 26 and 29** each add an entry, not required while the engine is Experimental.
 - **Promotion** to Supported (ADR-0011) flips the required flag in repository settings.
 - **The nightly matrix** (newest LTS or minor of each engine) is added with PR 17 and extended in PRs 26 and 29.
+
+## Amendments (PR 01 on Postgres, 2026-10-12)
+
+Source: a scratch run of PR 01's tests on Postgres over the harness. SQLite passed 32 of 32. On Postgres, 25 failed and all of them fell within existing gaps: `GuidAggregates` (42883) for 15 rows, `StringCollation` for 7 rows. `PeopleRepositoryDuplicateNameTests` passes.
+
+- **B1. The harness stack carries the Group 0 tests.**
+  - The harness branch is rebased onto the Group 0 tip as each Group 0 PR lands, starting with PR 01.
+  - On each rebase, the rename commit (A2) also switches the new test classes to `JellyfinDbTestFixture`.
+  - The gap-ledger commit (PR 13) wraps their failing spans. For PR 01 that is 10 `KnownGap.On` sites, about +52/-26 over 6 files.
+  - The `BaseItemRepositoryGroupingTests` conflict is resolved once: PR 01's test bodies, inside the harness wrapper.
+- **B2. `GuidAggregates` masks the ordering assertions on Postgres.**
+  - Every `GetItemList` query that groups by presentation key fails on the missing `min(uuid)` before any ordering assertion runs. So on Postgres the 16 `NullOrder`, `StringOrder` and `NameRange` rows from PR 01 test nothing about ordering until PR 15 ships the aggregate.
+  - **PR 14** cannot cite those rows as evidence for the `"C"` collation or the `NULLS FIRST`/`LAST` generator. Its ADR-0006 `[ProviderFact]` checks must exercise ordering through a query path that does not group by presentation key. The PR 14 author confirms that path exists before writing the tests.
+  - **PR 15** is where those rows first run their assertions on Postgres. PR 15 reports every row that leaves `GuidAggregates` by name: either it passes, or the gap it moved to. "`GuidAggregates` closed" is not "ordering verified". The PR 15 explainer says so.
