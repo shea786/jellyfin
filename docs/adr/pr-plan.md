@@ -182,5 +182,11 @@ The user changed the delivery strategy. This supersedes "small, stacked, indepen
 | #17115 | open | SQLite pessimistic-lock rework | Re-check the locking default (ADR-0008 U3) |
 | #17449 | open issue | `--restore-archive` crashes on a fresh instance | Covered by step 08 (ADR-0003 U1) |
 | X1 (ours) | published on origin | Premark fix sent upstream on its own | S8 |
+| X2 (ours) | local, not pushed | Premiere date read from the broadcast date tag (`ProbeResultNormalizer.cs:1658`) | S10 |
 
   - Also re-run the scan's searches at each sync: `git grep -i -E "postgres|npgsql|mysql|mariadb"` on `upstream/master`, plus the commit log under `src/Jellyfin.Database`, `Jellyfin.Server.Implementations/Item`, `Jellyfin.Server/Migrations` and `FullSystemBackup` since the last sync.
+- **S10. X2, `fix/probe-broadcast-date`, is an independent unit like X1.** The user ruled on 2026-10-12 that it is fixed as part of this work.
+  - The bug: `ProbeResultNormalizer.cs:1658` looked up `WM/MediaOriginalBroadcastDateTime` but parsed the year tag, so the broadcast date never became the premiere date. Details are in ADR-0004 U3.
+  - The branch is cut from `upstream/master`, not stacked on the steps, so it can be submitted on its own. It has one commit with the fix and its test.
+  - It goes through the usual gates and gets an explainer. It is then merged into `feature/multi-db` with `--no-ff`.
+  - Whether it ships inside the single PR or separately is decided at submission time, as for X1. Until then it is not pushed.
