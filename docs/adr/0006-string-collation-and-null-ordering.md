@@ -103,3 +103,10 @@
 ## Amendments (upstream reconciliation, 2026-10-12)
 
 - **U1.** Nothing upstream addresses collation or NULL ordering. Watch #18299 (seeded random sort, `EF.Functions.Random`) and check it when the Postgres ordering translation is written in step 14.
+
+## Amendments (step 14 gate, 2026-10-13)
+
+- **R5. Null placement is written only where NULL can occur, and only nullable index columns get a null sort order. This refines the Decision's index rule and R2.**
+  - Gate finding: PostgreSQL does not use NOT NULL to treat `NULLS FIRST` and `NULLS LAST` as the same order. Key and unique-constraint indexes cannot carry a null order and stay `ASC NULLS LAST`, so `ORDER BY "Id" NULLS FIRST LIMIT 10` lost its index-only scan and became a parallel sequential scan plus a sort on 200k rows. Paging by key (trickplay, devices) and every `Id` tie-breaker were affected. "Ordered index scans still apply" held only for non-constraint indexes.
+  - Decision: the generator overrides `VisitOrdering` and appends `NULLS FIRST` (ascending) or `NULLS LAST` (descending) only when the expression can be NULL; a column that is not nullable in the query keeps the default clause-free ordering, and any expression whose nullability is not known keeps the clause. The index convention sets a null sort order only on nullable columns. Non-nullable columns sort the same either way, so results do not change.
+  - R2 is revised accordingly: the override is now required, not a fallback. If it can be built on the public `NpgsqlQuerySqlGenerator` constructor with `reverseNullOrderingEnabled: false`, the internal builder method and the `EF1001` suppression go away. The generated-SQL test now also pins that a non-nullable column gets no clause.
