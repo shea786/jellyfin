@@ -219,3 +219,10 @@ The user changed the delivery strategy. This supersedes "small, stacked, indepen
   - **Pace.** Work is parallelised wherever dependencies allow. Provider tracks (PostgreSQL conventions and baseline, then MySQL/MariaDB and SQL Server) are prepared in their own worktrees on top of the harness while Group 0 finishes, and are rebased onto the proper base when it lands. The aim is a working server on every engine early, then hardening.
   - Milestones reported: Group 0 complete; harness merged; each engine reaching "server starts and the parity suite is green"; the final upstream series and the overall explainer.
 - **S13. Step 09 is dropped (ADR-0001 P1).** The SQLite-era routines with engine SQL never run outside SQLite: they are pre-marked on fresh installs and carried by restore. Group 0 is steps 01-08. The step numbering of later steps is unchanged; step 10 follows step 08.
+
+## Amendments (step 14/15 gate, 2026-10-13)
+
+- **B6. Step 14 delta PASS; step 15 PASS WITH NITS, one must-fix decided by building step 12 now.**
+  - Step 15's provider message tells users to set `database:ConnectionString` (`JELLYFIN_DATABASE__CONNECTIONSTRING`), which nothing reads yet. Rather than ship a message that points at nothing, or drop it and re-add it later, step 12 (connection-string override, ADR-0001 option 3b) is built now from the Group 0 tip. The override is applied to a copy of the database options, so no later save can persist it.
+  - Order on the fork: harness rebase (steps 10/13 with the PostgreSQL classifier and identity reseeding) and step 12 merge into `feature/multi-db`; steps 14/15 are then rebased onto that tip with the step 15 nits folded in: B2 log "backed up as" only when a real backup key exists, B3 a 73-column body line in `1c855cf282`, B4 `PostgresMigrationBaseline` and `PostgresUuidAggregate` internal.
+  - In the final linear series step 12 precedes steps 13-15, so the message is true at every commit that carries it.
