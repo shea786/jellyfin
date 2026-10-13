@@ -16,6 +16,7 @@ using MediaBrowser.Controller.Library;
 using MediaBrowser.Controller.SystemBackupService;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Metadata;
 using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -35,6 +36,7 @@ public class BackupService : IBackupService
     private readonly IJellyfinDatabaseProvider _jellyfinDatabaseProvider;
     private readonly IHostApplicationLifetime _hostApplicationLifetime;
     private readonly ILibraryManager _libraryManager;
+    private readonly IMigrationRoutineCatalog _migrationRoutineCatalog;
     private static readonly JsonSerializerOptions _serializerSettings = new JsonSerializerOptions(JsonSerializerDefaults.General)
     {
         AllowTrailingCommas = true,
@@ -53,6 +55,7 @@ public class BackupService : IBackupService
     /// <param name="jellyfinDatabaseProvider">The Jellyfin database Provider in use.</param>
     /// <param name="applicationLifetime">The SystemManager.</param>
     /// <param name="libraryManager">Instance of the <see cref="ILibraryManager"/> interface.</param>
+    /// <param name="migrationRoutineCatalog">The code migration routines of this server.</param>
     public BackupService(
         ILogger<BackupService> logger,
         IDbContextFactory<JellyfinDbContext> dbProvider,
@@ -60,7 +63,8 @@ public class BackupService : IBackupService
         IServerApplicationPaths applicationPaths,
         IJellyfinDatabaseProvider jellyfinDatabaseProvider,
         IHostApplicationLifetime applicationLifetime,
-        ILibraryManager libraryManager)
+        ILibraryManager libraryManager,
+        IMigrationRoutineCatalog migrationRoutineCatalog)
     {
         _logger = logger;
         _dbProvider = dbProvider;
@@ -69,6 +73,7 @@ public class BackupService : IBackupService
         _jellyfinDatabaseProvider = jellyfinDatabaseProvider;
         _hostApplicationLifetime = applicationLifetime;
         _libraryManager = libraryManager;
+        _migrationRoutineCatalog = migrationRoutineCatalog;
     }
 
     /// <inheritdoc/>
@@ -180,78 +185,205 @@ public class BackupService : IBackupService
                             throw new InvalidOperationException("Cannot restore backup that has no History data.");
                     }
 
-                    var historyRepository = dbContext.GetService<IHistoryRepository>();
-                    await historyRepository.CreateIfNotExistsAsync().ConfigureAwait(false);
-
-                    foreach (var item in await historyRepository.GetAppliedMigrationsAsync(CancellationToken.None).ConfigureAwait(false))
-                    {
-                        var insertScript = historyRepository.GetDeleteScript(item.MigrationId);
-                        await dbContext.Database.ExecuteSqlRawAsync(insertScript).ConfigureAwait(false);
-                    }
-
-                    foreach (var item in historyEntries)
-                    {
-                        var insertScript = historyRepository.GetInsertScript(item);
-                        await dbContext.Database.ExecuteSqlRawAsync(insertScript).ConfigureAwait(false);
-                    }
-
                     dbContext.ChangeTracker.QueryTrackingBehavior = QueryTrackingBehavior.NoTracking;
                     var entityTypes = typeof(JellyfinDbContext).GetProperties(System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance)
                         .Where(e => e.PropertyType.IsAssignableTo(typeof(IQueryable)))
                         .Select(e => (Type: e, Set: e.GetValue(dbContext) as IQueryable))
                         .ToArray();
 
-                    var tableNames = entityTypes.Select(f => dbContext.Model.FindEntityType(f.Type.PropertyType.GetGenericArguments()[0])!.GetSchemaQualifiedTableName()!);
-                    _logger.LogInformation("Begin purging database");
-                    await _jellyfinDatabaseProvider.PurgeDatabase(dbContext, tableNames).ConfigureAwait(false);
-                    _logger.LogInformation("Database Purged");
-
+                    // Read every table once before anything is replaced, so a damaged archive is rejected while the current database is still intact.
                     foreach (var entityType in entityTypes)
                     {
-                        _logger.LogInformation("Read backup of {Table}", entityType.Type.Name);
-
                         var zipEntry = zipArchive.GetEntry(NormalizePathSeparator(Path.Combine("Database", $"{entityType.Type.Name}.json")));
                         if (zipEntry is null)
                         {
-                            _logger.LogInformation("No backup of expected table {Table} is present in backup, continuing anyway", entityType.Type.Name);
                             continue;
                         }
 
-                        var zipEntryStream = await zipEntry.OpenAsync().ConfigureAwait(false);
-                        await using (zipEntryStream.ConfigureAwait(false))
+                        _logger.LogInformation("Validate backup of {Table}", entityType.Type.Name);
+                        var validatedClrType = entityType.Type.PropertyType.GetGenericArguments()[0];
+                        var validatedKeys = GetGeneratedKeys(dbContext.Model.FindEntityType(validatedClrType)!);
+                        await foreach (var (source, _) in ReadEntitiesAsync(zipEntry, validatedClrType).ConfigureAwait(false))
                         {
-                            _logger.LogInformation("Restore backup of {Table}", entityType.Type.Name);
-                            var records = 0;
-                            await foreach (var item in JsonSerializer.DeserializeAsyncEnumerable<JsonObject>(zipEntryStream, _serializerSettings).ConfigureAwait(false))
-                            {
-                                var entity = item.Deserialize(entityType.Type.PropertyType.GetGenericArguments()[0]);
-                                if (entity is null)
-                                {
-                                    throw new InvalidOperationException($"Cannot deserialize entity '{item}'");
-                                }
-
-                                try
-                                {
-                                    records++;
-                                    dbContext.Add(entity);
-                                }
-                                catch (Exception ex)
-                                {
-                                    _logger.LogError(ex, "Could not store entity {Entity}, continuing anyway", item);
-                                }
-                            }
-
-                            _logger.LogInformation("Prepared to restore {Number} entries for {Table}", records, entityType.Type.Name);
+                            ReadGeneratedKeys(source, validatedKeys);
                         }
                     }
 
-                    _logger.LogInformation("Try restore Database");
-                    await dbContext.SaveChangesAsync().ConfigureAwait(false);
+                    // A restore runs before the startup migrations. On a server that was never started the database holds no tables
+                    // yet, and one that was updated since its last start is missing columns the rows are restored into.
+                    await dbContext.Database.MigrateAsync().ConfigureAwait(false);
+
+                    var transaction = await dbContext.Database.BeginTransactionAsync().ConfigureAwait(false);
+                    await using (transaction.ConfigureAwait(false))
+                    {
+                        // The tables keep the schema of this server, so its schema migrations stay as they are and the ones
+                        // of the archive are not taken over. Only the code routines follow the archive, as they describe the data.
+                        var routineIds = _migrationRoutineCatalog.RoutineIds;
+                        var historyRepository = dbContext.GetService<IHistoryRepository>();
+                        var schemaMigrations = dbContext.GetService<IMigrationsAssembly>().Migrations;
+                        await historyRepository.CreateIfNotExistsAsync().ConfigureAwait(false);
+
+                        foreach (var item in await historyRepository.GetAppliedMigrationsAsync(CancellationToken.None).ConfigureAwait(false))
+                        {
+                            if (schemaMigrations.ContainsKey(item.MigrationId))
+                            {
+                                continue;
+                            }
+
+                            var insertScript = historyRepository.GetDeleteScript(item.MigrationId);
+                            await dbContext.Database.ExecuteSqlRawAsync(insertScript).ConfigureAwait(false);
+                        }
+
+                        foreach (var item in historyEntries)
+                        {
+                            if (!routineIds.Contains(item.MigrationId))
+                            {
+                                continue;
+                            }
+
+                            var insertScript = historyRepository.GetInsertScript(item);
+                            await dbContext.Database.ExecuteSqlRawAsync(insertScript).ConfigureAwait(false);
+                        }
+
+                        var tableNames = entityTypes.Select(f => dbContext.Model.FindEntityType(f.Type.PropertyType.GetGenericArguments()[0])!.GetSchemaQualifiedTableName()!);
+                        _logger.LogInformation("Begin purging database");
+                        await _jellyfinDatabaseProvider.PurgeDatabase(dbContext, tableNames).ConfigureAwait(false);
+                        _logger.LogInformation("Database Purged");
+
+                        var rowCleaner = new RestoredRowCleaner(_logger);
+
+                        // Each table is saved on its own, so the tables its keys refer to have to be saved before it.
+                        foreach (var entitySet in OrderByForeignKeys(entityTypes.Select(e => e.Type), dbContext.Model))
+                        {
+                            _logger.LogInformation("Read backup of {Table}", entitySet.Name);
+
+                            var zipEntry = zipArchive.GetEntry(NormalizePathSeparator(Path.Combine("Database", $"{entitySet.Name}.json")));
+                            if (zipEntry is null)
+                            {
+                                _logger.LogInformation("No backup of expected table {Table} is present in backup, continuing anyway", entitySet.Name);
+                                continue;
+                            }
+
+                            _logger.LogInformation("Restore backup of {Table}", entitySet.Name);
+                            var records = 0;
+                            var entityClrType = entitySet.PropertyType.GetGenericArguments()[0];
+                            var modelType = dbContext.Model.FindEntityType(entityClrType)!;
+                            var generatedKeys = GetGeneratedKeys(modelType);
+                            var identityScope = await _jellyfinDatabaseProvider.BeginExplicitIdentityInsertAsync(dbContext, modelType, CancellationToken.None).ConfigureAwait(false);
+                            await using (identityScope.ConfigureAwait(false))
+                            {
+                                rowCleaner.BeginTable(modelType);
+                                await foreach (var (source, entity) in ReadEntitiesAsync(zipEntry, entityClrType).ConfigureAwait(false))
+                                {
+                                    try
+                                    {
+                                        records++;
+                                        RestoreGeneratedKeys(dbContext, entity, ReadGeneratedKeys(source, generatedKeys));
+                                        if (rowCleaner.TryAccept(dbContext.Entry(entity)))
+                                        {
+                                            dbContext.Add(entity);
+                                        }
+                                    }
+                                    catch (Exception ex)
+                                    {
+                                        _logger.LogError(ex, "Could not store entity {Entity}, continuing anyway", entity);
+                                    }
+                                }
+
+                                rowCleaner.EndTable();
+                                _logger.LogInformation("Prepared to restore {Number} entries for {Table}", records, entitySet.Name);
+                                await dbContext.SaveChangesAsync().ConfigureAwait(false);
+                                dbContext.ChangeTracker.Clear();
+                            }
+                        }
+
+                        _logger.LogInformation("Finish restoring Database");
+                        await _jellyfinDatabaseProvider.CompleteDatabaseRestoreAsync(dbContext, CancellationToken.None).ConfigureAwait(false);
+                        await transaction.CommitAsync().ConfigureAwait(false);
+                    }
+
                     _logger.LogInformation("Restored database");
                 }
             }
 
             _logger.LogInformation("Restored Jellyfin system from {Date}", manifest.DateCreated);
+        }
+    }
+
+    private static List<System.Reflection.PropertyInfo> OrderByForeignKeys(IEnumerable<System.Reflection.PropertyInfo> sets, IModel model)
+    {
+        var remaining = sets
+            .Select(e => (Set: e, Type: model.FindEntityType(e.PropertyType.GetGenericArguments()[0])!))
+            .ToList();
+        var ordered = new List<System.Reflection.PropertyInfo>();
+        while (remaining.Count > 0)
+        {
+            var ready = remaining
+                .Where(e => e.Type.GetForeignKeys().All(key => key.PrincipalEntityType == e.Type || remaining.All(other => other.Type != key.PrincipalEntityType))
+                    && RestoredRowCleaner.SoftReferences.Where(reference => reference.Dependent == e.Type.ClrType).All(reference => remaining.All(other => other.Type.ClrType != reference.Principal)))
+                .ToList();
+            if (ready.Count == 0)
+            {
+                // Tables that refer to each other cannot be put in an order, so they stay as they are.
+                ready = remaining.ToList();
+            }
+
+            ordered.AddRange(ready.Select(e => e.Set));
+            remaining.RemoveAll(e => ready.Contains(e));
+        }
+
+        return ordered;
+    }
+
+    // The serializer cannot set a property with a non-public setter, which is how most generated ids are declared.
+    // Without this they would be generated again and no longer match the rows that refer to them.
+    private static void RestoreGeneratedKeys(JellyfinDbContext dbContext, object entity, IReadOnlyList<(IProperty Key, object? Value)> values)
+    {
+        var entry = dbContext.Entry(entity);
+        foreach (var (key, value) in values)
+        {
+            entry.Property(key.Name).CurrentValue = value;
+        }
+    }
+
+    private static IProperty[] GetGeneratedKeys(IEntityType entityType)
+    {
+        return entityType.FindPrimaryKey()!.Properties
+            .Where(e => e.ValueGenerated == ValueGenerated.OnAdd)
+            .ToArray();
+    }
+
+    // Reads the generated keys of a row before the restore changes anything. An id that cannot be read fails the whole restore
+    // while the database is still intact, instead of dropping the row after the old data is gone.
+    private static List<(IProperty Key, object? Value)> ReadGeneratedKeys(JsonObject source, IReadOnlyList<IProperty> generatedKeys)
+    {
+        var values = new List<(IProperty, object?)>(generatedKeys.Count);
+        foreach (var key in generatedKeys)
+        {
+            if (source[key.Name] is { } value)
+            {
+                values.Add((key, value.Deserialize(key.ClrType)));
+            }
+        }
+
+        return values;
+    }
+
+    private static async IAsyncEnumerable<(JsonObject Source, object Entity)> ReadEntitiesAsync(ZipArchiveEntry zipEntry, Type entityClrType)
+    {
+        var zipEntryStream = await zipEntry.OpenAsync().ConfigureAwait(false);
+        await using (zipEntryStream.ConfigureAwait(false))
+        {
+            await foreach (var item in JsonSerializer.DeserializeAsyncEnumerable<JsonObject>(zipEntryStream, _serializerSettings).ConfigureAwait(false))
+            {
+                var entity = item.Deserialize(entityClrType);
+                if (item is null || entity is null)
+                {
+                    throw new InvalidOperationException($"Cannot deserialize entity '{item}'");
+                }
+
+                yield return (item, entity);
+            }
         }
     }
 
