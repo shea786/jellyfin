@@ -96,3 +96,9 @@
   - Step 07 does not build a second ItemValues retry. If #17119 lands first, step 07 uses its retry rather than wrapping it.
 - **U2. Existing ad-hoc retries stay as they are**: `DisplayPreferencesManager.cs:45-50` and `:123`, `ItemPersistenceService.cs:201`, `SessionManager.cs:274`. Moving them onto `WriteConflictRetry` would be an unrelated change, so step 07 only does it where it already edits that method. The rest are listed as a possible follow-up.
 - **U3. Watch #17115.** It reworks SQLite pessimistic locking and touches the locking classes that the `NoLock` default relies on.
+
+## Amendments (step 07, 2026-10-13)
+
+- **S1. On SQLite the retry does not run.** The EF transaction takes SQLite's write lock at `BEGIN`; another connection's `INSERT` gets `SQLITE_BUSY` immediately (probed), so a read-then-insert race cannot happen and no unique violation from a concurrent writer reaches the retry. The Consequences sentence "a save that loses the ItemValues race now retries instead of failing" therefore describes engines with concurrent writers, not SQLite. The tests stage the race on the attempt's own connection to raise a real constraint violation, which is valid for testing the retry.
+- **S2. BUSY and LOCKED are not classified as retryable** because `OptimisticLockBehavior` and the busy timeout already retry the command, and BUSY never follows a stale read. A unique violation caused by a bug is retried twice and then rethrown.
+- **S3. Test (a)1, `ConcurrencyToken_SecondStaleSaveThrows`,** is added to step 07 as its first commit, pinning existing behaviour.
