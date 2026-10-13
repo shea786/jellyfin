@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using Emby.Server.Implementations.Data;
 using Jellyfin.Database.Implementations.Entities;
+using Jellyfin.Database.Testing;
 using Jellyfin.Extensions;
 using Jellyfin.Server.Implementations.Item;
 using MediaBrowser.Controller.Entities;
@@ -17,7 +18,7 @@ namespace Jellyfin.Server.Implementations.Tests.Item;
 /// A NUL character in the text a caller filters or orders items by is ignored, so the query returns what it
 /// returns without the NUL. Some engines reject a NUL in a query parameter.
 /// </summary>
-public sealed class BaseItemRepositoryNulTermTests : SqliteDbTestFixture
+public sealed class BaseItemRepositoryNulTermTests : JellyfinDbTestFixture
 {
     private static readonly string[] _allNames = ["ALICE", "Bob", "Rob", "Zoe", "bo", "bobby"];
 
@@ -38,11 +39,14 @@ public sealed class BaseItemRepositoryNulTermTests : SqliteDbTestFixture
     {
         AddMovies("Bob", "bobby", "Rob", "ALICE", "bo", "Zoe");
 
-        Assert.Equal(["Bob", "bobby"], Names(new InternalItemsQuery(new User("test", "auth", "reset"))
+        KnownGap.On(KnownGaps.GuidAggregates, () =>
         {
-            IncludeItemTypes = [BaseItemKind.Movie],
-            NameStartsWith = prefix
-        }));
+            Assert.Equal(["Bob", "bobby"], Names(new InternalItemsQuery(new User("test", "auth", "reset"))
+            {
+                IncludeItemTypes = [BaseItemKind.Movie],
+                NameStartsWith = prefix
+            }));
+        });
     }
 
     [Theory]
@@ -54,11 +58,14 @@ public sealed class BaseItemRepositoryNulTermTests : SqliteDbTestFixture
     {
         AddMovies("Bob", "bobby", "Rob", "ALICE", "bo", "Zoe");
 
-        Assert.Equal(["ALICE", "bo"], Names(new InternalItemsQuery(new User("test", "auth", "reset"))
+        KnownGap.On(KnownGaps.GuidAggregates, () =>
         {
-            IncludeItemTypes = [BaseItemKind.Movie],
-            NameLessThan = bound
-        }));
+            Assert.Equal(["ALICE", "bo"], Names(new InternalItemsQuery(new User("test", "auth", "reset"))
+            {
+                IncludeItemTypes = [BaseItemKind.Movie],
+                NameLessThan = bound
+            }));
+        });
     }
 
     [Theory]
@@ -70,11 +77,14 @@ public sealed class BaseItemRepositoryNulTermTests : SqliteDbTestFixture
     {
         AddMovies("Bob", "bobby", "Rob", "ALICE", "bo", "Zoe");
 
-        Assert.Equal(["Bob", "Rob", "Zoe", "bobby"], Names(new InternalItemsQuery(new User("test", "auth", "reset"))
+        KnownGap.On(KnownGaps.GuidAggregates, () =>
         {
-            IncludeItemTypes = [BaseItemKind.Movie],
-            NameStartsWithOrGreater = bound
-        }));
+            Assert.Equal(["Bob", "Rob", "Zoe", "bobby"], Names(new InternalItemsQuery(new User("test", "auth", "reset"))
+            {
+                IncludeItemTypes = [BaseItemKind.Movie],
+                NameStartsWithOrGreater = bound
+            }));
+        });
     }
 
     [Fact]
@@ -82,21 +92,24 @@ public sealed class BaseItemRepositoryNulTermTests : SqliteDbTestFixture
     {
         AddMovies("Bob", "bobby", "Rob", "ALICE", "bo", "Zoe");
 
-        Assert.Equal(_allNames, Names(new InternalItemsQuery(new User("test", "auth", "reset"))
+        KnownGap.On(KnownGaps.GuidAggregates, () =>
         {
-            IncludeItemTypes = [BaseItemKind.Movie],
-            NameStartsWith = "\0"
-        }));
-        Assert.Equal(_allNames, Names(new InternalItemsQuery(new User("test", "auth", "reset"))
-        {
-            IncludeItemTypes = [BaseItemKind.Movie],
-            NameLessThan = "\0"
-        }));
-        Assert.Equal(_allNames, Names(new InternalItemsQuery(new User("test", "auth", "reset"))
-        {
-            IncludeItemTypes = [BaseItemKind.Movie],
-            NameStartsWithOrGreater = "\0"
-        }));
+            Assert.Equal(_allNames, Names(new InternalItemsQuery(new User("test", "auth", "reset"))
+            {
+                IncludeItemTypes = [BaseItemKind.Movie],
+                NameStartsWith = "\0"
+            }));
+            Assert.Equal(_allNames, Names(new InternalItemsQuery(new User("test", "auth", "reset"))
+            {
+                IncludeItemTypes = [BaseItemKind.Movie],
+                NameLessThan = "\0"
+            }));
+            Assert.Equal(_allNames, Names(new InternalItemsQuery(new User("test", "auth", "reset"))
+            {
+                IncludeItemTypes = [BaseItemKind.Movie],
+                NameStartsWithOrGreater = "\0"
+            }));
+        });
     }
 
     [Theory]
@@ -110,13 +123,16 @@ public sealed class BaseItemRepositoryNulTermTests : SqliteDbTestFixture
         // does not recognise the term leaves them in the wrong order.
         AddMovies("Quasarium", "Quasar Wave", "Quasar");
 
-        var result = _repository.GetItemList(new InternalItemsQuery(new User("test", "auth", "reset"))
+        KnownGap.On(KnownGaps.GuidAggregates, () =>
         {
-            IncludeItemTypes = [BaseItemKind.Movie],
-            SearchTerm = term
-        });
+            var result = _repository.GetItemList(new InternalItemsQuery(new User("test", "auth", "reset"))
+            {
+                IncludeItemTypes = [BaseItemKind.Movie],
+                SearchTerm = term
+            });
 
-        Assert.Equal(["Quasar", "Quasar Wave", "Quasarium"], result.Select(i => i.Name).ToArray());
+            Assert.Equal(["Quasar", "Quasar Wave", "Quasarium"], result.Select(i => i.Name).ToArray());
+        });
     }
 
     private string[] Names(InternalItemsQuery query)

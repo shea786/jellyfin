@@ -2,6 +2,7 @@ using System;
 using System.Linq;
 using Emby.Server.Implementations.Data;
 using Jellyfin.Database.Implementations.Entities;
+using Jellyfin.Database.Testing;
 using Jellyfin.Server.Implementations.Item;
 using MediaBrowser.Controller.Entities;
 using MediaBrowser.Controller.Persistence;
@@ -15,7 +16,7 @@ namespace Jellyfin.Server.Implementations.Tests.Item;
 /// SQL <c>lower()</c> folds ASCII only, so names that differ only in the case of a non-ASCII letter stay
 /// separate.
 /// </summary>
-public sealed class PeopleRepositoryCaseDedupeTests : SqliteDbTestFixture
+public sealed class PeopleRepositoryCaseDedupeTests : JellyfinDbTestFixture
 {
     private readonly PeopleRepository _repository;
 
@@ -46,7 +47,10 @@ public sealed class PeopleRepositoryCaseDedupeTests : SqliteDbTestFixture
     {
         var result = _repository.GetPeople(new InternalPeopleQuery());
 
-        Assert.Equal(["Bob", "Émile", "émile"], result.Items.Select(p => p.Name).Order(StringComparer.Ordinal).ToArray());
-        Assert.Equal(3, result.TotalRecordCount);
+        KnownGap.On(KnownGaps.UnicodeLower, () =>
+        {
+            Assert.Equal(["Bob", "Émile", "émile"], result.Items.Select(p => p.Name).Order(StringComparer.Ordinal).ToArray());
+            Assert.Equal(3, result.TotalRecordCount);
+        });
     }
 }

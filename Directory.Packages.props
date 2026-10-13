@@ -53,6 +53,7 @@
     <PackageVersion Include="Moq" Version="4.18.4" />
     <PackageVersion Include="NEbml" Version="1.1.0.5" />
     <PackageVersion Include="Newtonsoft.Json" Version="13.0.4" />
+    <PackageVersion Include="Npgsql.EntityFrameworkCore.PostgreSQL" Version="10.0.3" />
     <PackageVersion Include="PDFtoImage" Version="5.2.1" />
     <PackageVersion Include="PlaylistsNET" Version="1.4.1" />
     <PackageVersion Include="prometheus-net.AspNetCore" Version="8.2.1" />
@@ -80,11 +81,14 @@
     <PackageVersion Include="Swashbuckle.AspNetCore" Version="10.2.3" />
     <PackageVersion Include="System.Text.Json" Version="10.0.11" />
     <PackageVersion Include="TagLibSharp" Version="2.3.0" />
+    <PackageVersion Include="Testcontainers.PostgreSql" Version="4.16.0" />
     <PackageVersion Include="z440.atl.core" Version="7.18.0" />
     <PackageVersion Include="TMDbLib" Version="3.0.0" />
     <PackageVersion Include="UTF.Unknown" Version="2.7.0" />
     <PackageVersion Include="xunit.runner.visualstudio" Version="3.1.5" />
     <PackageVersion Include="xunit.v3" Version="3.2.2" />
+    <PackageVersion Include="xunit.v3.assert" Version="3.2.2" />
+    <PackageVersion Include="xunit.v3.extensibility.core" Version="3.2.2" />
     <PackageVersion Include="Xunit.v3.Priority" Version="1.1.18" />
   </ItemGroup>
 </Project>

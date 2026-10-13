@@ -3,6 +3,7 @@ using System.Linq;
 using Emby.Server.Implementations.Data;
 using Jellyfin.Database.Implementations;
 using Jellyfin.Database.Implementations.Entities;
+using Jellyfin.Database.Testing;
 using Jellyfin.Server.Implementations.Item;
 using MediaBrowser.Controller.Entities;
 using Xunit;
@@ -16,7 +17,7 @@ namespace Jellyfin.Server.Implementations.Tests.Item;
 /// A missing value is the lowest value of its sort key: it comes first when ascending and last when
 /// descending. Each item gets a distinct name so no assertion relies on how equal keys are ordered.
 /// </summary>
-public sealed class BaseItemRepositoryNullOrderTests : SqliteDbTestFixture
+public sealed class BaseItemRepositoryNullOrderTests : JellyfinDbTestFixture
 {
     private const string MissingName = "Missing";
     private const string LowName = "Low";
@@ -53,8 +54,11 @@ public sealed class BaseItemRepositoryNullOrderTests : SqliteDbTestFixture
             context.SaveChanges();
         }
 
-        Assert.Equal([MissingName, LowName, HighName], Names(sortBy, SortOrder.Ascending));
-        Assert.Equal([HighName, LowName, MissingName], Names(sortBy, SortOrder.Descending));
+        KnownGap.On(KnownGaps.GuidAggregates, () =>
+        {
+            Assert.Equal([MissingName, LowName, HighName], Names(sortBy, SortOrder.Ascending));
+            Assert.Equal([HighName, LowName, MissingName], Names(sortBy, SortOrder.Descending));
+        });
     }
 
     private string[] Names(ItemSortBy sortBy, SortOrder sortOrder)

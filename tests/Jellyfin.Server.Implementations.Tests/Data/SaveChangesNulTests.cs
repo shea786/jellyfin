@@ -5,6 +5,7 @@ using Jellyfin.Data.Enums;
 using Jellyfin.Database.Implementations;
 using Jellyfin.Database.Implementations.Entities;
 using Jellyfin.Database.Implementations.Entities.Security;
+using Jellyfin.Database.Testing;
 using Jellyfin.Server.Implementations.Tests.Item;
 using Microsoft.EntityFrameworkCore;
 using Xunit;
@@ -17,7 +18,7 @@ namespace Jellyfin.Server.Implementations.Tests.Data;
 /// unique index are not changed: code that compares them with stored rows has to clean them first, and a value
 /// cleaned on save would no longer be the string it compared.
 /// </summary>
-public sealed class SaveChangesNulTests : SqliteDbTestFixture
+public sealed class SaveChangesNulTests : JellyfinDbTestFixture
 {
     [Theory]
     [InlineData(false)]
@@ -76,7 +77,7 @@ public sealed class SaveChangesNulTests : SqliteDbTestFixture
         }
     }
 
-    [Theory]
+    [ProviderTheory(TestDbProvider.Sqlite)]
     [InlineData(false)]
     [InlineData(true)]
     public async Task SaveChanges_ModifiedEntity_StripsLegacyNulFromAColumnItDidNotChange(bool useAsync)
@@ -145,7 +146,7 @@ public sealed class SaveChangesNulTests : SqliteDbTestFixture
         }
     }
 
-    [Fact]
+    [ProviderFact(TestDbProvider.Sqlite)]
     public void SaveChanges_ModifiedEntityWithNulInKey_SavesTheOtherChanges()
     {
         var itemId = Guid.NewGuid();
@@ -174,7 +175,7 @@ public sealed class SaveChangesNulTests : SqliteDbTestFixture
         }
     }
 
-    [Theory]
+    [ProviderTheory(TestDbProvider.Sqlite)]
     [InlineData("ItemValues")]
     [InlineData("ProviderIds")]
     [InlineData("UserData")]
@@ -203,7 +204,7 @@ public sealed class SaveChangesNulTests : SqliteDbTestFixture
         Assert.Equal(["value", "value\0"], StoredValues(readContext, shape).Order(StringComparer.Ordinal));
     }
 
-    [Fact]
+    [ProviderFact(TestDbProvider.Sqlite)]
     public void SaveChanges_ModifiedEntityWithNulInUniqueColumn_SavesTheOtherChangesAndKeepsTheColumn()
     {
         using (var context = CreateDbContext())
@@ -232,7 +233,7 @@ public sealed class SaveChangesNulTests : SqliteDbTestFixture
         Assert.Equal(["rock", "rock!"], values.Select(e => e.CleanValue));
     }
 
-    [Fact]
+    [ProviderFact(TestDbProvider.Sqlite)]
     public void SaveChanges_NulInUniqueColumn_IsKeptWhileTheOtherColumnsOfTheEntityAreCleaned()
     {
         using (var context = CreateDbContext())

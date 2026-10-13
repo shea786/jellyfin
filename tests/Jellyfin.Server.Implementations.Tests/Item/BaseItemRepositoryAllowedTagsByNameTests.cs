@@ -4,6 +4,7 @@ using Emby.Server.Implementations.Data;
 using Jellyfin.Data;
 using Jellyfin.Database.Implementations.Entities;
 using Jellyfin.Database.Implementations.Enums;
+using Jellyfin.Database.Testing;
 using Jellyfin.Server.Implementations.Item;
 using MediaBrowser.Controller.Entities;
 using Xunit;
@@ -16,7 +17,7 @@ namespace Jellyfin.Server.Implementations.Tests.Item;
 /// artists - of the media those tags let through. The by-name item carries none of the media's tags,
 /// so the allowed-tags filter would otherwise hide every one of them.
 /// </summary>
-public sealed class BaseItemRepositoryAllowedTagsByNameTests : SqliteDbTestFixture
+public sealed class BaseItemRepositoryAllowedTagsByNameTests : JellyfinDbTestFixture
 {
     private const string AllowedTag = "kids";
 
@@ -33,17 +34,23 @@ public sealed class BaseItemRepositoryAllowedTagsByNameTests : SqliteDbTestFixtu
     [Fact]
     public void GetGenres_WithAllowedTags_ReturnsGenresOfAllowedItems()
     {
-        var result = _repository.GetGenres(CreateQuery(AllowedTag));
+        KnownGap.On(KnownGaps.GuidAggregates, () =>
+        {
+            var result = _repository.GetGenres(CreateQuery(AllowedTag));
 
-        Assert.Equal(["Comedy"], Names(result));
+            Assert.Equal(["Comedy"], Names(result));
+        });
     }
 
     [Fact]
     public void GetStudios_WithAllowedTags_ReturnsStudiosOfAllowedItems()
     {
-        var result = _repository.GetStudios(CreateQuery(AllowedTag));
+        KnownGap.On(KnownGaps.GuidAggregates, () =>
+        {
+            var result = _repository.GetStudios(CreateQuery(AllowedTag));
 
-        Assert.Equal(["Pixar"], Names(result));
+            Assert.Equal(["Pixar"], Names(result));
+        });
     }
 
     [Fact]
@@ -57,9 +64,12 @@ public sealed class BaseItemRepositoryAllowedTagsByNameTests : SqliteDbTestFixtu
     [Fact]
     public void GetGenres_WithoutAllowedTags_ReturnsEveryGenre()
     {
-        var result = _repository.GetGenres(CreateQuery());
+        KnownGap.On(KnownGaps.GuidAggregates, () =>
+        {
+            var result = _repository.GetGenres(CreateQuery());
 
-        Assert.Equal(["Comedy", "Horror", "Jazz"], Names(result));
+            Assert.Equal(["Comedy", "Horror", "Jazz"], Names(result));
+        });
     }
 
     private static string[] Names(MediaBrowser.Model.Querying.QueryResult<(BaseItem Item, MediaBrowser.Model.Dto.ItemCounts? ItemCounts)> result)

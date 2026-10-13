@@ -2,6 +2,7 @@ using System;
 using System.Linq;
 using Jellyfin.Database.Implementations.Entities;
 using Jellyfin.Database.Implementations.Entities.Security;
+using Jellyfin.Database.Testing;
 using Jellyfin.Server.Implementations.Tests.Item;
 using Microsoft.EntityFrameworkCore;
 using Xunit;
@@ -12,7 +13,7 @@ namespace Jellyfin.Server.Implementations.Tests.Data;
 /// The <c>[MaxLength]</c> attributes on text columns are model metadata only: a value longer than the
 /// declared length is stored and read back whole, and is never truncated or rejected.
 /// </summary>
-public sealed class TextColumnLengthTests : SqliteDbTestFixture
+public sealed class TextColumnLengthTests : JellyfinDbTestFixture
 {
     [Fact]
     public void OverLength_DisplayText_IsStoredWhole()
@@ -26,7 +27,7 @@ public sealed class TextColumnLengthTests : SqliteDbTestFixture
             context.Users.Add(new User("user", "auth", "reset") { Id = userId });
             context.ActivityLogs.Add(new ActivityLog("Over-long overview", "Test", userId) { Overview = overview });
             context.Devices.Add(new Device(userId, "app", appVersion, "device", "device-id"));
-            context.SaveChanges();
+            KnownGap.On(KnownGaps.StringColumnLength, () => context.SaveChanges());
         }
 
         using (var context = CreateDbContext())
@@ -50,7 +51,7 @@ public sealed class TextColumnLengthTests : SqliteDbTestFixture
                 Id = userId,
                 ProfileImage = new ImageInfo(path)
             });
-            context.SaveChanges();
+            KnownGap.On(KnownGaps.StringColumnLength, () => context.SaveChanges());
         }
 
         using (var context = CreateDbContext())

@@ -2,6 +2,7 @@ using System;
 using System.Linq;
 using Emby.Server.Implementations.Data;
 using Jellyfin.Database.Implementations.Entities;
+using Jellyfin.Database.Testing;
 using Jellyfin.Server.Implementations.Item;
 using MediaBrowser.Controller.Entities;
 using Xunit;
@@ -14,7 +15,7 @@ namespace Jellyfin.Server.Implementations.Tests.Item;
 /// text is smallest by Unicode code point, case-sensitively: upper case before '_' before lower case
 /// before accented letters.
 /// </summary>
-public sealed class BaseItemRepositoryItemValueStringTests : SqliteDbTestFixture
+public sealed class BaseItemRepositoryItemValueStringTests : JellyfinDbTestFixture
 {
     private static readonly string[] _expected = ["Rock", "_zed", "alpha", "Élan"];
 
@@ -31,9 +32,12 @@ public sealed class BaseItemRepositoryItemValueStringTests : SqliteDbTestFixture
     {
         Seed(ItemValueType.Tags);
 
-        var result = _repository.GetTagNames(CreateQuery());
+        KnownGap.On(KnownGaps.StringCollation, () =>
+        {
+            var result = _repository.GetTagNames(CreateQuery());
 
-        Assert.Equal(_expected, result);
+            Assert.Equal(_expected, result);
+        });
     }
 
     [Fact]
@@ -41,9 +45,12 @@ public sealed class BaseItemRepositoryItemValueStringTests : SqliteDbTestFixture
     {
         Seed(ItemValueType.Genre);
 
-        var result = _repository.GetGenreNames();
+        KnownGap.On(KnownGaps.StringCollation, () =>
+        {
+            var result = _repository.GetGenreNames();
 
-        Assert.Equal(_expected, result.Order(StringComparer.Ordinal));
+            Assert.Equal(_expected, result.Order(StringComparer.Ordinal));
+        });
     }
 
     [Fact]
@@ -52,10 +59,13 @@ public sealed class BaseItemRepositoryItemValueStringTests : SqliteDbTestFixture
         Seed(ItemValueType.Tags);
         Seed(ItemValueType.Genre);
 
-        var result = _repository.GetQueryFiltersLegacy(CreateQuery());
+        KnownGap.On(KnownGaps.StringCollation, () =>
+        {
+            var result = _repository.GetQueryFiltersLegacy(CreateQuery());
 
-        Assert.Equal(_expected, result.Tags);
-        Assert.Equal(_expected, result.Genres);
+            Assert.Equal(_expected, result.Tags);
+            Assert.Equal(_expected, result.Genres);
+        });
     }
 
     private static InternalItemsQuery CreateQuery()

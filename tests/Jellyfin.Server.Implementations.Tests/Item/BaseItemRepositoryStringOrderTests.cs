@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using Emby.Server.Implementations.Data;
 using Jellyfin.Database.Implementations.Entities;
+using Jellyfin.Database.Testing;
 using Jellyfin.Server.Implementations.Item;
 using MediaBrowser.Controller.Entities;
 using Xunit;
@@ -17,7 +18,7 @@ namespace Jellyfin.Server.Implementations.Tests.Item;
 /// accented letters. The name range filters compare the lower-cased sort name instead, so they ignore case
 /// but still place '_' before letters and 'é' after 'z'.
 /// </summary>
-public sealed class BaseItemRepositoryStringOrderTests : SqliteDbTestFixture
+public sealed class BaseItemRepositoryStringOrderTests : JellyfinDbTestFixture
 {
     private static readonly string[] _values = ["Bob", "_zed", "alice", "Ángel"];
 
@@ -37,8 +38,11 @@ public sealed class BaseItemRepositoryStringOrderTests : SqliteDbTestFixture
     {
         AddMovies(_values);
 
-        Assert.Equal(["Bob", "_zed", "alice", "Ángel"], Names(OrderedBy(sortBy, SortOrder.Ascending)));
-        Assert.Equal(["Ángel", "alice", "_zed", "Bob"], Names(OrderedBy(sortBy, SortOrder.Descending)));
+        KnownGap.On(KnownGaps.GuidAggregates, () =>
+        {
+            Assert.Equal(["Bob", "_zed", "alice", "Ángel"], Names(OrderedBy(sortBy, SortOrder.Ascending)));
+            Assert.Equal(["Ángel", "alice", "_zed", "Bob"], Names(OrderedBy(sortBy, SortOrder.Descending)));
+        });
     }
 
     [Theory]
@@ -49,14 +53,17 @@ public sealed class BaseItemRepositoryStringOrderTests : SqliteDbTestFixture
     {
         AddMovies("alice", "Bob", "_zed", "Zed", "élan");
 
-        var result = _repository.GetItemList(new InternalItemsQuery(new User("test", "auth", "reset"))
+        KnownGap.On(KnownGaps.GuidAggregates, () =>
         {
-            IncludeItemTypes = [BaseItemKind.Movie],
-            NameStartsWithOrGreater = nameStartsWithOrGreater,
-            NameLessThan = nameLessThan
-        });
+            var result = _repository.GetItemList(new InternalItemsQuery(new User("test", "auth", "reset"))
+            {
+                IncludeItemTypes = [BaseItemKind.Movie],
+                NameStartsWithOrGreater = nameStartsWithOrGreater,
+                NameLessThan = nameLessThan
+            });
 
-        Assert.Equal(expected.Order(StringComparer.Ordinal), SortedNames(result));
+            Assert.Equal(expected.Order(StringComparer.Ordinal), SortedNames(result));
+        });
     }
 
     private static string[] SortedNames(IReadOnlyList<BaseItem> items)

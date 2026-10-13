@@ -2,6 +2,7 @@ using System;
 using System.Linq;
 using Emby.Server.Implementations.Data;
 using Jellyfin.Database.Implementations.Entities;
+using Jellyfin.Database.Testing;
 using Jellyfin.Server.Implementations.Item;
 using MediaBrowser.Controller.Entities;
 using MediaBrowser.Controller.Persistence;
@@ -14,7 +15,7 @@ namespace Jellyfin.Server.Implementations.Tests.Item;
 /// People are listed by lower-cased name in Unicode code point order, so '_' comes before letters and
 /// accented letters after 'z'. The name range filters compare the lower-cased name the same way.
 /// </summary>
-public sealed class PeopleRepositoryNameOrderTests : SqliteDbTestFixture
+public sealed class PeopleRepositoryNameOrderTests : JellyfinDbTestFixture
 {
     private readonly PeopleRepository _repository;
 
@@ -36,9 +37,12 @@ public sealed class PeopleRepositoryNameOrderTests : SqliteDbTestFixture
     [Fact]
     public void GetPeople_NoFilter_OrdersByLowerCasedNameCodePoint()
     {
-        var result = _repository.GetPeople(new InternalPeopleQuery());
+        KnownGap.On(KnownGaps.StringCollation, () =>
+        {
+            var result = _repository.GetPeople(new InternalPeopleQuery());
 
-        Assert.Equal(["_zed", "alice", "Bob", "Zed", "Ángel", "élan"], result.Items.Select(p => p.Name));
+            Assert.Equal(["_zed", "alice", "Bob", "Zed", "Ángel", "élan"], result.Items.Select(p => p.Name));
+        });
     }
 
     [Theory]
@@ -47,13 +51,16 @@ public sealed class PeopleRepositoryNameOrderTests : SqliteDbTestFixture
     [InlineData(null, "é", new[] { "_zed", "alice", "Bob", "Zed", "Ángel" })]
     public void GetPeople_NameRange_BoundsByLowerCasedNameCodePoint(string? nameStartsWithOrGreater, string? nameLessThan, string[] expected)
     {
-        var result = _repository.GetPeople(new InternalPeopleQuery
+        KnownGap.On(KnownGaps.StringCollation, () =>
         {
-            NameStartsWithOrGreater = nameStartsWithOrGreater,
-            NameLessThan = nameLessThan
-        });
+            var result = _repository.GetPeople(new InternalPeopleQuery
+            {
+                NameStartsWithOrGreater = nameStartsWithOrGreater,
+                NameLessThan = nameLessThan
+            });
 
-        Assert.Equal(expected, result.Items.Select(p => p.Name));
-        Assert.Equal(expected.Length, result.TotalRecordCount);
+            Assert.Equal(expected, result.Items.Select(p => p.Name));
+            Assert.Equal(expected.Length, result.TotalRecordCount);
+        });
     }
 }

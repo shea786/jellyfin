@@ -3,6 +3,7 @@ using System.Linq;
 using Emby.Server.Implementations.Data;
 using Jellyfin.Database.Implementations;
 using Jellyfin.Database.Implementations.Entities;
+using Jellyfin.Database.Testing;
 using Jellyfin.Server.Implementations.Item;
 using MediaBrowser.Controller.Entities;
 using Xunit;
@@ -17,7 +18,7 @@ namespace Jellyfin.Server.Implementations.Tests.Item;
 /// that year, among the items that have a premiere date. An item with neither is the lowest.
 /// Each item gets a distinct name so no assertion relies on how equal keys are ordered.
 /// </summary>
-public sealed class BaseItemRepositoryPremiereDateOrderTests : SqliteDbTestFixture
+public sealed class BaseItemRepositoryPremiereDateOrderTests : JellyfinDbTestFixture
 {
     private readonly BaseItemRepository _repository;
     private readonly ItemTypeLookup _itemTypeLookup = new();
@@ -65,8 +66,11 @@ public sealed class BaseItemRepositoryPremiereDateOrderTests : SqliteDbTestFixtu
             "Year 9999"
         ];
 
-        Assert.Equal(ascending, Names(SortOrder.Ascending));
-        Assert.Equal(ascending.Reverse(), Names(SortOrder.Descending));
+        KnownGap.On(KnownGaps.GuidAggregates, () =>
+        {
+            Assert.Equal(ascending, Names(SortOrder.Ascending));
+            Assert.Equal(ascending.Reverse(), Names(SortOrder.Descending));
+        });
     }
 
     [Fact]
@@ -85,7 +89,9 @@ public sealed class BaseItemRepositoryPremiereDateOrderTests : SqliteDbTestFixtu
             context.SaveChanges();
         }
 
-        Assert.Equal(["Year 2005", "Premiered 2010, year 1980", "Year 2015"], Names(SortOrder.Ascending));
+        KnownGap.On(
+            KnownGaps.GuidAggregates,
+            () => Assert.Equal(["Year 2005", "Premiered 2010, year 1980", "Year 2015"], Names(SortOrder.Ascending)));
     }
 
     private string[] Names(SortOrder sortOrder)

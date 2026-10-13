@@ -6,6 +6,7 @@ using Jellyfin.Data.Queries;
 using Jellyfin.Database.Implementations.Entities;
 using Jellyfin.Database.Implementations.Entities.Security;
 using Jellyfin.Database.Implementations.Enums;
+using Jellyfin.Database.Testing;
 using Jellyfin.Server.Implementations.Devices;
 using Jellyfin.Server.Implementations.Tests.Item;
 using MediaBrowser.Controller.Library;
@@ -22,7 +23,7 @@ namespace Jellyfin.Server.Implementations.Tests.Users;
 /// only by a NUL is added again and the stored options are never found. The same goes for the devices: whoever
 /// calls the manager, a device id with a NUL finds the device stored without it.
 /// </summary>
-public sealed class DeviceManagerNulTests : SqliteDbTestFixture
+public sealed class DeviceManagerNulTests : JellyfinDbTestFixture
 {
     private readonly Guid _userId = Guid.NewGuid();
     private readonly User _user;
@@ -143,7 +144,7 @@ public sealed class DeviceManagerNulTests : SqliteDbTestFixture
         Assert.Equal("name", options?.CustomName);
     }
 
-    [Theory]
+    [ProviderTheory(TestDbProvider.Sqlite)]
     [InlineData("dev\0")]
     [InlineData("dev")]
     public void GetDevices_DeviceIdWithOrWithoutNul_FindsALegacyDeviceStoredWithANul(string deviceId)
@@ -155,7 +156,7 @@ public sealed class DeviceManagerNulTests : SqliteDbTestFixture
         Assert.Equal("name", device.DeviceName);
     }
 
-    [Theory]
+    [ProviderTheory(TestDbProvider.Sqlite)]
     [InlineData("dev\0")]
     [InlineData("dev")]
     public void GetDevice_DeviceIdWithOrWithoutNul_FindsALegacyDeviceStoredWithANul(string deviceId)

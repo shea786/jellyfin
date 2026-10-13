@@ -7,6 +7,7 @@ using Emby.Server.Implementations.Data;
 using Emby.Server.Implementations.Library.Search;
 using Jellyfin.Data.Queries;
 using Jellyfin.Database.Implementations.Entities;
+using Jellyfin.Database.Testing;
 using Jellyfin.Extensions;
 using Jellyfin.Server.Implementations.Activity;
 using Jellyfin.Server.Implementations.Item;
@@ -28,7 +29,7 @@ namespace Jellyfin.Server.Implementations.Tests.Data;
 /// "%Quasar", which only finds values that end in "quasar", and "%\0Quasar%" behaved as "%", which finds
 /// every row. The second item of each pair is a decoy that only the last of these would also find.
 /// </summary>
-public sealed class SearchTermWithNulTests : SqliteDbTestFixture
+public sealed class SearchTermWithNulTests : JellyfinDbTestFixture
 {
     private readonly ItemTypeLookup _itemTypeLookup = new();
     private readonly BaseItemRepository _repository;
@@ -80,12 +81,6 @@ public sealed class SearchTermWithNulTests : SqliteDbTestFixture
     [InlineData("\0Quasar", "Quasar")]
     public async Task Search_TermWithNul_MatchesAsWithoutNul(string term, string termWithoutNul)
     {
-        Assert.Equal(["Item One"], SearchByTerm(termWithoutNul));
-        Assert.Equal(["Item One"], SearchByTerm(term));
-
-        Assert.Equal(["Item One"], SearchByNameContains(termWithoutNul));
-        Assert.Equal(["Item One"], SearchByNameContains(term));
-
         Assert.Equal(["Item One"], await SearchWithProviderAsync(termWithoutNul).ConfigureAwait(true));
         Assert.Equal(["Item One"], await SearchWithProviderAsync(term).ConfigureAwait(true));
 
@@ -101,6 +96,15 @@ public sealed class SearchTermWithNulTests : SqliteDbTestFixture
             Assert.Equal(["Quasar Login"], await GetActivityNamesAsync(filter, termWithoutNul).ConfigureAwait(true));
             Assert.Equal(["Quasar Login"], await GetActivityNamesAsync(filter, term).ConfigureAwait(true));
         }
+
+        KnownGap.On(KnownGaps.GuidAggregates, () =>
+        {
+            Assert.Equal(["Item One"], SearchByTerm(termWithoutNul));
+            Assert.Equal(["Item One"], SearchByTerm(term));
+
+            Assert.Equal(["Item One"], SearchByNameContains(termWithoutNul));
+            Assert.Equal(["Item One"], SearchByNameContains(term));
+        });
     }
 
     private string[] SearchByTerm(string term)

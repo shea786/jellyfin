@@ -1,6 +1,7 @@
 using System;
 using Emby.Server.Implementations.Data;
 using Jellyfin.Database.Implementations.Entities;
+using Jellyfin.Database.Testing;
 using Jellyfin.Server.Implementations.Item;
 using MediaBrowser.Controller.Dto;
 using MediaBrowser.Controller.Entities;
@@ -15,7 +16,7 @@ namespace Jellyfin.Server.Implementations.Tests.Item;
 /// BaseItems. One item can reach the same clean value through more than one value row, so the
 /// join has to be counted per distinct item; counting rows reports a multiple of the truth.
 /// </summary>
-public sealed class BaseItemRepositoryByNameItemCountsTests : SqliteDbTestFixture
+public sealed class BaseItemRepositoryByNameItemCountsTests : JellyfinDbTestFixture
 {
     private readonly BaseItemRepository _repository;
     private readonly ItemTypeLookup _itemTypeLookup;
@@ -76,12 +77,15 @@ public sealed class BaseItemRepositoryByNameItemCountsTests : SqliteDbTestFixtur
         // or a box set read as zero in a list and as one on the genre's own page.
         SeedGenreWith(kind);
 
-        var result = _repository.GetGenres(CreateCountingQuery());
+        KnownGap.On(KnownGaps.GuidAggregates, () =>
+        {
+            var result = _repository.GetGenres(CreateCountingQuery());
 
-        var (_, counts) = Assert.Single(result.Items);
-        Assert.NotNull(counts);
-        Assert.Equal(1, kind == BaseItemKind.Book ? counts.BookCount : counts.BoxSetCount);
-        Assert.Equal(1, counts.ItemCount);
+            var (_, counts) = Assert.Single(result.Items);
+            Assert.NotNull(counts);
+            Assert.Equal(1, kind == BaseItemKind.Book ? counts.BookCount : counts.BoxSetCount);
+            Assert.Equal(1, counts.ItemCount);
+        });
     }
 
     /// <summary>

@@ -4,6 +4,7 @@ using System;
 using System.Linq;
 using Jellyfin.Database.Implementations;
 using Jellyfin.Database.Implementations.Entities;
+using Jellyfin.Database.Testing;
 using Xunit;
 
 namespace Jellyfin.Server.Implementations.Tests.Item;
@@ -13,7 +14,7 @@ namespace Jellyfin.Server.Implementations.Tests.Item;
 /// (BaseItemRepository.TranslateQuery) and the DatePlayed ordering (OrderMapper) translate
 /// and evaluate correctly on the SQLite provider.
 /// </summary>
-public sealed class AlternateVersionQueryTranslationTests : SqliteDbTestFixture
+public sealed class AlternateVersionQueryTranslationTests : JellyfinDbTestFixture
 {
     public AlternateVersionQueryTranslationTests()
     {
@@ -136,8 +137,10 @@ public sealed class AlternateVersionQueryTranslationTests : SqliteDbTestFixture
                 .Select(e => e.Id)
                 .ToList();
 
+            Assert.Equal(seededIds.Order(), ordered.Order());
+
             // The movie whose only progress is on its alternate version sorts before the unplayed one.
-            Assert.Equal([primaryId, otherId], ordered);
+            KnownGap.On(KnownGaps.NullOrdering, () => Assert.Equal([primaryId, otherId], ordered));
         }
     }
 
