@@ -118,11 +118,11 @@ public sealed class PostgresDatabaseProviderTests : DatabaseTestFixture
     }
 
     [ProviderFact(TestDbProvider.Postgres)]
-    public async Task MigrationBackupFast_ReturnsTheNoSnapshotKey()
+    public async Task MigrationBackupFast_ReturnsAnEmptyKey()
     {
         var key = await CreateProvider().MigrationBackupFast(CancellationToken.None);
 
-        Assert.Equal(PostgresDatabaseProvider.NoSnapshotKey, key);
+        Assert.Equal(string.Empty, key);
     }
 
     [ProviderFact(TestDbProvider.Postgres)]
@@ -145,12 +145,23 @@ public sealed class PostgresDatabaseProviderTests : DatabaseTestFixture
     }
 
     [ProviderFact(TestDbProvider.Postgres)]
-    public async Task RestoreBackupFast_NoSnapshotKey_LogsCriticalWithTheLastAppliedMigration()
+    public async Task MigrationBackupFast_OnlyCodeRoutinesRecorded_DoesNotWarn()
+    {
+        // A fresh install records the routines that have nothing to do before the schema migrations have run.
+        RecordAppliedMigration("20250420050000_DisableTranscodingThrottling");
+
+        await CreateProvider().MigrationBackupFast(CancellationToken.None);
+
+        Assert.DoesNotContain(_logger.Entries, e => e.Level == LogLevel.Warning);
+    }
+
+    [ProviderFact(TestDbProvider.Postgres)]
+    public async Task RestoreBackupFast_EmptyKey_LogsCriticalWithTheLastAppliedMigration()
     {
         RecordAppliedMigration("20200101000000_InitialCreate");
         RecordAppliedMigration("20200102000000_Later");
 
-        await CreateProvider().RestoreBackupFast(PostgresDatabaseProvider.NoSnapshotKey, CancellationToken.None);
+        await CreateProvider().RestoreBackupFast(string.Empty, CancellationToken.None);
 
         var critical = Assert.Single(_logger.Entries, e => e.Level == LogLevel.Critical);
         Assert.Contains("20200102000000_Later", critical.Message, StringComparison.Ordinal);
@@ -162,13 +173,14 @@ public sealed class PostgresDatabaseProviderTests : DatabaseTestFixture
     {
         await CreateProvider().RestoreBackupFast("unknown", CancellationToken.None);
 
-        Assert.Single(_logger.Entries, e => e.Level == LogLevel.Critical);
+        var critical = Assert.Single(_logger.Entries, e => e.Level == LogLevel.Critical);
+        Assert.Contains("does not exist: unknown", critical.Message, StringComparison.Ordinal);
     }
 
     [ProviderFact(TestDbProvider.Postgres)]
-    public async Task DeleteBackup_NoSnapshotKey_DoesNothing()
+    public async Task DeleteBackup_EmptyKey_DoesNothing()
     {
-        await CreateProvider().DeleteBackup(PostgresDatabaseProvider.NoSnapshotKey);
+        await CreateProvider().DeleteBackup(string.Empty);
 
         Assert.Empty(_logger.Entries);
     }

@@ -10,7 +10,9 @@ using Jellyfin.Database.Implementations.Conventions;
 using Jellyfin.Database.Implementations.DbConfiguration;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
+using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Metadata;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Query;
 using Microsoft.Extensions.Logging;
 using Npgsql;
@@ -24,13 +26,13 @@ namespace Jellyfin.Database.Providers.Postgres;
 [JellyfinDatabaseProviderKey("Jellyfin-PostgreSQL")]
 public sealed class PostgresDatabaseProvider : IJellyfinDatabaseProvider
 {
-    /// <summary>
-    /// The key <see cref="MigrationBackupFast"/> returns, as PostgreSQL has nothing to snapshot.
-    /// </summary>
-    public const string NoSnapshotKey = "postgres:no-snapshot";
-
     private const int DefaultCommandTimeout = 60;
     private const int MaxIdentifierLength = 63;
+
+    private const string ConnectionStringGuidance =
+        "Set CustomProviderOptions/ConnectionString in database.xml, "
+        + "or the database:ConnectionString configuration key (environment variable JELLYFIN_DATABASE__CONNECTIONSTRING).";
+
     private static readonly TimeSpan _maintenanceCommandTimeout = TimeSpan.FromHours(1);
     private readonly ILogger<PostgresDatabaseProvider> _logger;
 
@@ -52,13 +54,23 @@ public sealed class PostgresDatabaseProvider : IJellyfinDatabaseProvider
         var customOptions = databaseConfiguration.CustomProviderOptions;
         if (string.IsNullOrWhiteSpace(customOptions?.ConnectionString))
         {
-            throw new InvalidOperationException(
-                "No PostgreSQL connection string is configured. Set CustomProviderOptions/ConnectionString in database.xml, "
-                + "or the database:ConnectionString configuration key (environment variable JELLYFIN_DATABASE__CONNECTIONSTRING).");
+            throw new InvalidOperationException("No PostgreSQL connection string is configured. " + ConnectionStringGuidance);
         }
 
         var providerOptions = customOptions.Options;
-        var connectionStringBuilder = new NpgsqlConnectionStringBuilder(customOptions.ConnectionString);
+        NpgsqlConnectionStringBuilder connectionStringBuilder;
+        try
+        {
+            connectionStringBuilder = new NpgsqlConnectionStringBuilder(customOptions.ConnectionString);
+        }
+        catch (Exception ex) when (ex is ArgumentException or FormatException)
+        {
+            // Neither the connection string nor the exception is passed on, as the messages of Npgsql can repeat
+            // keywords and values of the connection string, and it can hold a password.
+            throw new InvalidOperationException(
+                "The configured PostgreSQL connection string is not valid. It is not shown, as it may contain a password. "
+                + ConnectionStringGuidance);
+        }
 
         var commandTimeout = GetOption<int?>(providerOptions, "command-timeout", e => int.Parse(e, CultureInfo.InvariantCulture));
         if (commandTimeout is not null)
@@ -205,13 +217,14 @@ public sealed class PostgresDatabaseProvider : IJellyfinDatabaseProvider
                 + "of the database before upgrading, it is the only way to return to the state before a failed upgrade.");
         }
 
-        return NoSnapshotKey;
+        // PostgreSQL has nothing to snapshot, the empty key says that no snapshot was taken.
+        return string.Empty;
     }
 
     /// <inheritdoc/>
     public async Task RestoreBackupFast(string key, CancellationToken cancellationToken)
     {
-        if (!string.Equals(key, NoSnapshotKey, StringComparison.Ordinal))
+        if (!string.IsNullOrEmpty(key))
         {
             _logger.LogCritical("Tried to restore a backup that does not exist: {Key}", key);
             return;
@@ -408,7 +421,10 @@ public sealed class PostgresDatabaseProvider : IJellyfinDatabaseProvider
         var context = await DbContextFactory.CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
         await using (context.ConfigureAwait(false))
         {
-            return (await context.Database.GetAppliedMigrationsAsync(cancellationToken).ConfigureAwait(false)).Any();
+            // The history also holds the code routines, which a fresh install records before the schema exists.
+            var schemaMigrations = context.GetService<IMigrationsAssembly>().Migrations.Keys;
+            return (await context.Database.GetAppliedMigrationsAsync(cancellationToken).ConfigureAwait(false))
+                .Any(id => schemaMigrations.Contains(id));
         }
     }
 
