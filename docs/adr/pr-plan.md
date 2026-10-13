@@ -191,7 +191,7 @@ The user changed the delivery strategy. This supersedes "small, stacked, indepen
 
 | Upstream | State at scan | What it does | Our response |
 |---|---|---|---|
-| #17899 | open | Roll back failed database restores; the archive is validated first | Step 08 adopts it if merged and drops our duplicate pre-flight (ADR-0003 U1) |
+| #17899 | open | Roll back failed database restores; the archive is validated first | Step 08's second commit (validate, transaction, in-transaction purge) overlaps it, and the later step 08 commits build on that commit, so it cannot simply be dropped. If #17899 lands, that commit is replaced by #17899 when the series is replayed and the conflicts in the later commits are resolved then (decided at the step 08 gate, 2026-10-13) |
 | #17901 | open, depends on #17899 | `CompleteDatabaseRestoreAsync(JellyfinDbContext, CancellationToken)` on the provider | We use exactly this member (ADR-0003 U1) |
 | #17119 | open | ItemValues get-or-create retry under parallel saves | `WriteConflictRetry` follows its shape (ADR-0008 U1). Step 07's last commit wraps `UpdateOrInsertItems`; if #17119 merges first, drop that commit (dropping it gives exactly commit 3's tree) and fix commit 3 so #17119's new test builds: `ItemPersistenceServiceItemValueRaceTests.cs:171-175` constructs `ItemPersistenceService` with 3 arguments and needs the provider argument added (CS7036). |
 | #18091 | open | Foreign keys on TrickplayInfos/MediaSegments, new migration, `PRAGMA foreign_keys` | Regenerate the PG baseline and move the migration pin (ADR-0003 U3) |
