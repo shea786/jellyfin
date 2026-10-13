@@ -89,6 +89,12 @@ SQL `lower()`/`upper()` appears at `PeopleRepository.cs:55-60,182,477,487,492`, 
   - **Plans.** Query plans are compared, not only timings. The People prefix lookup must not lose an index it uses today (`IX_Peoples_NameLower` or another).
   - **Limits, stated in the explainer.** Search runs with no user, so no access filtering; code migrations are not applied to the seed.
 
+- **R1a. Benchmarks run under load, with plans as the gate (2026-10-13, user direction).** The machine is not going to be quiet, so the "quiet machine" requirement of R2 is replaced for every later benchmark (PostgreSQL in R1(ii), MySQL/MariaDB and SQL Server later).
+  - **Equal budgets.** A database server under test runs in a container with explicit limits (`--cpus=2 --memory=4g` unless stated otherwise), and the SQLite side runs pinned to the same number of cores (`taskset`), so both get the same CPU budget.
+  - **Interleaved runs.** The sides are run alternately in one window, at least three pairs (SQLite, other, SQLite, other, ...). Each side is judged on its lowest median and lowest p95 from that window.
+  - **Context recorded.** The load average and the concurrent build or test activity at the start of each run go into the result file and the explainer.
+  - **Plans decide.** A wrong plan blocks: a lost index, an unexpected sequential scan on a large table, an unexpected sort where an ordered index scan is expected (for example `NULLS FIRST` ordering). Timing thresholds (R1, R2) are indicative: a timing over a threshold with correct plans is recorded with its load context and does not block.
+
 - **R3. Step 05 rulings (worker report, tip `f93a6b4aae`).**
   - **The ban has two blind files.** `SqlSearchProvider.cs` and `BaseItemRepository.TranslateQuery.cs` already disable RS0030 for the whole file, for the banned `Guid` operators. The ban cannot catch a two-argument `Like` there. Accepted: narrowing those pragmas is an unrelated change to upstream files. Every other file is covered, the step leaves no two-argument `Like` anywhere, and the commit body states the gap.
   - **New file-level CA1304/CA1311 suppressions** in `SqlSearchProvider.cs` and `ActivityManager.cs`, for `ToLower()` inside EF expressions. Accepted: `PeopleRepository.cs` and `BaseItemRepository.TranslateQuery.cs` already do the same, and the culture overloads do not translate to SQL.

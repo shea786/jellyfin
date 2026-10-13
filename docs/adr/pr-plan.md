@@ -140,7 +140,7 @@ Source: a scratch run of step 01's tests on Postgres over the harness. SQLite pa
   - **Step 08** must cover a SQLite backup restored onto PostgreSQL end to end (history mapping, identity, NUL).
   - **Step 18** adds provider selection to `JellyfinApplicationFactory` (it never writes `database.xml`; an experiment patch exists) and a per-provider variant of `StartOverTests.DeletedDatabase_*`, whose refusal text differs on PostgreSQL.
   - **Step 16** (tests on the migrated schema) brings `IX_Peoples_NameLower` to model-source test databases.
-  - **Benchmark.** ADR-0005 R1(ii) (SQLite against PostgreSQL after the conventions) and NULLS FIRST index use on large tables are measured before step 14 is merged.
+  - **Benchmark.** ADR-0005 R1(ii) (SQLite against PostgreSQL after the conventions) and NULLS FIRST index use on large tables are measured before step 14 is merged. The run follows ADR-0005 R1a (2026-10-13): it no longer waits for a quiet machine; equal container/core budgets, at least three interleaved pairs, load recorded, plans decide and timings are indicative. The MySQL/MariaDB and SQL Server benchmarks follow the same rule.
   - The setup pre-marking bug the worker hit is X1, which the stack picks up on rebase.
 
 ## Amendments (single upstream PR, 2026-10-12)
