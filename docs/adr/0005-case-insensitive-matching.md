@@ -175,3 +175,11 @@ SQL `lower()`/`upper()` appears at `PeopleRepository.cs:55-60,182,477,487,492`, 
   - #18223 added another implicit-case `LIKE` at `SqlSearchProvider.cs:134` (the `SortName` branch). It joins the step 05 list.
   - #18265 fixed `PeopleRepository.cs:487` and `:492` (`CompareTo`), but not the `StartsWith` at `:482`, which lowers only the argument. That one stays ours in step 05.
 - **U3. Watch #16301.** It adds a SQLite-only `CleanValue` user-defined function for non-ASCII search. It is not portable and conflicts with option E in `TranslateQuery.cs`. If it moves forward, the user may want to raise option E in the upstream discussion.
+
+## Amendments (PostgreSQL benchmark, 2026-10-13)
+
+- **R7. R1(ii) result: plans pass; the timing threshold is tripped by JIT compilation, not by the scans.**
+  - Run: commit `99615e9ca7`, protocol R1a. Three interleaved pairs, PostgreSQL 16.15 at `--cpus=2 --memory=4g`, SQLite and client pinned to two cores, load average 7-41 (recorded per run). Summary: `/tmp/s05-bench/R1ii-summary.txt`.
+  - **Plans pass.** S9-S11 use `IX_BaseItems_SeriesName` as an index-only scan, forward and backward, with no sort and 0 heap fetches. S7 uses `IX_Peoples_NameLower` for the range scan and the anti-join probe. There is no unexpected sequential scan on an indexed predicate. Counts, set hashes and order hashes are identical across all six runs for S1-S14.
+  - **Timings.** S7 runs at 0.8 times SQLite and S13 at 0.24 times. S1-S6 run at 8-34 times SQLite, which is over the 3x threshold that would call for `pg_trgm`. Of that time, 90-99 percent is JIT compilation; see ADR-0003 R4, which turns JIT off. `pg_trgm` is not added on this evidence. The 3x rule is checked again with JIT off before step 14 merges.
+  - **Recorded, not blocking.** S13 uses an incremental sort over the `NULL` `SeriesName` group; an index on `(SeriesName, Id)` would stream, which is optional. S14's `SELECT DISTINCT` over all columns spills about 10 MB at `work_mem` 4MB. That query shape is the same on every engine (SQLite builds a temp B-tree), so it is a follow-up outside this series.
