@@ -98,7 +98,7 @@ This supersedes the Consequences bullet that promised "per-column lengths and a 
 - **L2. Over-length values are handled the same way on every engine, including SQLite.**
   - **Metadata-sourced keys (`Role`, `ItemValues.Value`)** are truncated to their bound at ingest by the shared persistence code, *before* de-duplication. Uniqueness is then judged on the stored value everywhere. This is a small change on SQLite.
   - **All other key-class values** are rejected by a shared `EnforceKeyLengths()` step in `SaveChanges`, next to `SanitizeStrings()`. The exception names the entity, the property and the bound.
-    - These values are server-generated or client-supplied identifiers, and real values are far below the bounds.
+    - These values are server-generated or client-supplied identifiers, and real values are far below the bounds. (False for several columns; replaced by the step 19 gate amendment below.)
     - This is new on SQLite: for example, a client that sends a `DeviceId` longer than 256 characters now gets an error.
     - The step checks only added or modified values, so existing rows stay readable.
   - **Invariant:** every row that SQLite accepts can be restored on every Supported engine. The restore pre-flight (ADR-0003 S2) reports violations before anything is purged.
@@ -118,6 +118,21 @@ This supersedes the Consequences bullet that promised "per-column lengths and a 
   - Ingest truncates `Role` and `Value`, and two roles that are equal after truncation map to one row.
   - Model conformance (ADR-0011): every index fits each engine's budget.
   - SQLite `HasPendingModelChanges` stays false.
+
+## Amendments (step 19 gate, 2026-10-13)
+
+The step 19 gate showed that L2's premise is false for several key-class columns: "server-generated or client-supplied identifiers, and real values are far below the bounds". Song user data keys (`albumArtist-Album-disc-track-Name`) and the keys of genres, people, studios and albums come from metadata and pass 256 characters. jellyfin-web's `DeviceId` is `btoa(userAgent + "|" + Date.now())` and passes 256 once the user agent passes about 178. Rejecting them turned play-state saves and web logins into 500s. L2 is replaced by the following.
+
+- **L2a. Lookup keys built from metadata or clients are normalised, not rejected.** `UserData.CustomDataKey`, `Devices.DeviceId` and `DeviceOptions.DeviceId`.
+  - A value within its bound is unchanged. A longer value becomes a prefix, `-`, and the lowercase SHA-256 hex digest of the whole UTF-8 value, cut so the result is exactly the bound. The prefix never splits a surrogate pair. The function is deterministic, culture-invariant and idempotent.
+  - Not a plain cut: an album's artist and title alone can fill 256 characters, so every track would share one key; a web `DeviceId` differs only in its trailing timestamp.
+  - One shared function, applied wherever such a value meets the database, for reads and writes: user data, item reattach, the auth header parse, the device manager, the legacy import routines and backup restore.
+  - A one-time code routine rewrites stored values over the bound, so existing play state and devices are found under their new key.
+- **L2b. Metadata display and grouping values are truncated at ingest** (`PeopleBaseItemMap.Role` to 400 and `ItemValues.Value` to 512), as before, and now also in the legacy import routines and backup restore. `Role` is trimmed after the cut. A filter on such a value is cut the same way, so a value over the bound can still be found.
+- **L2c. Provider ids over 128 characters are dropped with a warning**, at the item mapper, in the legacy import and in restore. A cut provider name would name a different provider.
+- **L2d. Names chosen by a user or a client are validated at the API** and get a 400: `Users.Username` (255), the display preferences `client` (32) and custom preference keys (256).
+- **L2e. `EnforceKeyLengths()` stays as the backstop** for anything the rules above miss. It checks only values that changed: an added entry, or a modified property whose current value differs ordinally from its original value, because `Update()` and `Attach` mark every property as modified. It throws an `InvalidOperationException` that names the entity, the property and the bound. No new exception type: it would be a permanent public addition to an assembly on the ABI list, for a path the rules above should make unreachable.
+- **Invariant, restated.** Every row written after this step fits the model on every engine. Older rows over a bound stay readable and saveable on SQLite and PostgreSQL: lookup keys are rewritten by the routine, and the rest are brought within bounds when the item is next refreshed. Restore applies L2a-L2c, so every backup restores on every Supported engine, and it fails before the purge, with a named message, only for what it cannot normalise.
 
 ## Amendments (step 06, 2026-10-12)
 
