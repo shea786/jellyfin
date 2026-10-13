@@ -6,6 +6,7 @@ using Jellyfin.Database.Implementations;
 using Jellyfin.Database.Implementations.Entities;
 using Jellyfin.Database.Implementations.Enums;
 using Jellyfin.Extensions.Json;
+using Jellyfin.Server.Implementations;
 using Jellyfin.Server.Implementations.Users;
 using MediaBrowser.Controller;
 using MediaBrowser.Controller.Entities;
@@ -91,6 +92,17 @@ public class MigrateUserDb : IMigrationRoutine
                 UserMockup? mockup = JsonSerializer.Deserialize<UserMockup>(entry.GetStream(2), JsonDefaults.Options);
                 if (mockup is null)
                 {
+                    continue;
+                }
+
+                if (mockup.Name.Length > KeyNormalizer.UsernameMaxLength)
+                {
+                    _logger.LogWarning(
+                        "Skipping the user {UserId} named {Username}, as the name is {Length} characters long and the maximum is {Max}",
+                        entry.GetGuid(1),
+                        mockup.Name,
+                        mockup.Name.Length,
+                        KeyNormalizer.UsernameMaxLength);
                     continue;
                 }
 
@@ -185,7 +197,7 @@ public class MigrateUserDb : IMigrationRoutine
 
                 user.SetPreference(PreferenceKind.BlockedTags, policy.BlockedTags);
                 user.SetPreference(PreferenceKind.EnabledChannels, policy.EnabledChannels);
-                user.SetPreference(PreferenceKind.EnabledDevices, policy.EnabledDevices);
+                user.SetPreference(PreferenceKind.EnabledDevices, KeyNormalizer.NormalizeDeviceIds(policy.EnabledDevices));
                 user.SetPreference(PreferenceKind.EnabledFolders, policy.EnabledFolders);
                 user.SetPreference(PreferenceKind.EnableContentDeletionFromFolders, policy.EnableContentDeletionFromFolders);
                 user.SetPreference(PreferenceKind.OrderedViews, config.OrderedViews);
