@@ -148,3 +148,12 @@
   - in-tree providers or the plugin route, which is the Meta discussion.
 
   Our design works either way, and the rule against copying from the GPL-3.0 plugin applies regardless.
+
+## Amendments (step 24 spike, 2026-10-13)
+
+- **F1. MariaDB floor 11.4.7, MySQL floor 8.4.** See ADR-0006 C4. The provider checks the server version when it initialises and refuses an older one with a message naming the floor. CI pins `mysql:8.4.11` and `mariadb:11.4.13`.
+- **F2. Lists of ids.** Microting 10.0.12 cannot send a list as one parameter on either server: the JSON path fails with "no type mapping", and the package has switches to turn it off because JSON_TABLE over a parameter can crash MySQL 8. The provider uses `UseParameterizedCollectionMode(MultipleParameters)`, does not call `EnablePrimitiveCollectionsSupport` (calling it afterwards silently resets the mode), and rewrites `EF.Parameter` lists to `EF.MultipleParameters` with a query expression interceptor. Interceptors are single shared instances, so EF does not build a service provider per context.
+  - EF pads the count into buckets, so the number of distinct statements stays small.
+  - The 65,535-placeholder limit applies only to server-side prepared statements, which EF does not use, so 70,000 and 200,000 ids run (241 / 212 ms and 547 / 607 ms, MySQL / MariaDB).
+  - The real limit is `max_allowed_packet`, at about 26 bytes per id. MariaDB's default 16 MiB takes 600,000 ids and fails at 1,000,000; MySQL's 64 MiB takes 1,000,000. The largest lists Jellyfin builds are whole-library descendant sets (item counts, library delete). The how-to recommends `max_allowed_packet` of at least 64M on MariaDB, and the ledger records lists past the packet size as a known gap. A temporary-table join would need a shared hook and is not planned.
+- **F3. Identity restart and restore.** On both servers `DELETE` keeps the counter and `ALTER TABLE ... AUTO_INCREMENT = 1` after it restarts it at 1, also for foreign-key children and across restarts. InnoDB keeps the counter above the highest explicit id by itself, persistently. So the provider's purge deletes inside one transaction with foreign-key checks off, then resets the counter only on tables where it is above 1 (that is the cheap case for a test lease that touched few tables). The restore hooks stay empty. `NO_AUTO_VALUE_ON_ZERO` stays out of `sql_mode`.
