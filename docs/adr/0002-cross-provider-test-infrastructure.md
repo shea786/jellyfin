@@ -110,6 +110,7 @@
 - **H1. A generic backend contract.** Per-test isolation belongs to the backend. The fixture never assumes template databases.
   - `TestDbProvider` gets one value per target: `Sqlite`, `Postgres`, `MySql`, `MariaDb`, `SqlServer`. Each value is added by the PR that adds its backend.
   - `ITestDatabaseBackend` exposes `Provider`, `ServerVersion` and `CreateAsync(TestSchemaSource, IInterceptor[], CancellationToken)`, which returns a `TestDatabase`.
+  - Added in step 11: `CreateEmpty()`, which returns a `TestDatabase` with no schema. It is for tests that run the server's own migrations, or that build the schema themselves. On the pooled engines it is never leased: like `fresh: true`, it is a new database that is dropped afterwards.
   - Isolation strategy per backend:
     - **SQLite:** an in-memory database per test instance, or a template copy under `Migrations`. Unchanged.
     - **PostgreSQL:** a template clone per test instance. Unchanged.
