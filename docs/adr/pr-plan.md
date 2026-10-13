@@ -134,6 +134,15 @@ Source: a scratch run of step 01's tests on Postgres over the harness. SQLite pa
 
 - **B4. Harness rebases are batched (2026-10-13).** The PostgreSQL track (steps 14-15) is built on the harness tip `57760e8c33` in parallel with Group 0. Rebasing the harness after every Group 0 step would move the base under that track each time, so the harness is rebased once Group 0 (through step 09) has landed, and the PostgreSQL track with it. That rebase adds the `NulInExactMatchParameter` gap from step 06 (ADR-0009 N3) and reports every Group 0 test on PostgreSQL, as B1-B3 require.
 
+- **B5. PostgreSQL track results (steps 14-15, tips `e11a40f4ea` and `5579b02ee2`) and the items they hand on.**
+  - The server runs on PostgreSQL 16.15 selected through `database.xml`: a fresh install migrates in one baseline, the wizard, authentication and the main API answer, a music library scan matches SQLite (including sort order and search), and a restart reuses the database. `GuidAggregates` (64 rows) and `PostgresMigrations` closed with every row passing; remaining PostgreSQL skips are Windows-only and SQLite-only tests.
+  - **Classifier.** When the stack is rebased onto step 07, the PostgreSQL provider implements `IsRetryableWriteConflict` (23505, 40001, 40P01) with the unit tests ADR-0008 lists. The integration test `LibraryStructureControllerTests.RenameLibrary_*` failed 2 of 3 runs on PostgreSQL with a 23505 on `PK_BaseItems` (`ValidateTopLibraryFolders` racing the scan). After that rebase it is run ten times; if it still fails it is a real bug to fix, not a gap.
+  - **Step 08** must cover a SQLite backup restored onto PostgreSQL end to end (history mapping, identity, NUL).
+  - **Step 18** adds provider selection to `JellyfinApplicationFactory` (it never writes `database.xml`; an experiment patch exists) and a per-provider variant of `StartOverTests.DeletedDatabase_*`, whose refusal text differs on PostgreSQL.
+  - **Step 16** (tests on the migrated schema) brings `IX_Peoples_NameLower` to model-source test databases.
+  - **Benchmark.** ADR-0005 R1(ii) (SQLite against PostgreSQL after the conventions) and NULLS FIRST index use on large tables are measured before step 14 is merged.
+  - The setup pre-marking bug the worker hit is X1, which the stack picks up on rebase.
+
 ## Amendments (single upstream PR, 2026-10-12)
 
 The user changed the delivery strategy. This supersedes "small, stacked, independently mergeable PRs" wherever it appears in this file and in the ADRs.
