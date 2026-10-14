@@ -12,10 +12,12 @@ using Jellyfin.Database.Implementations;
 using Jellyfin.Database.Implementations.DbConfiguration;
 using Jellyfin.Database.Implementations.Locking;
 using Jellyfin.Database.Testing;
+using Jellyfin.Server.Implementations.SystemBackupService;
 using Jellyfin.Server.Migrations;
 using Jellyfin.Server.Migrations.Stages;
 using Jellyfin.Server.ServerSetupApp;
 using MediaBrowser.Common.Configuration;
+using MediaBrowser.Controller.SystemBackupService;
 using MediaBrowser.Model.Configuration;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
@@ -25,6 +27,7 @@ using Microsoft.EntityFrameworkCore.Storage;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
+using Moq;
 using Xunit;
 
 namespace Jellyfin.Server.Tests.Migrations;
@@ -36,7 +39,8 @@ public sealed class MigrationInProgressMarkerTests : IDisposable
 {
     private const string MarkerFileName = "migration-in-progress.json";
     private const string NonTransactionalKey = "Jellyfin-NonTransactional";
-    private const string RestoreInstruction = "restore the database from the backup taken before the upgrade";
+    private const string RestoreInstruction = "restore the database from the backup your database engine took before the upgrade";
+    private const string EngineBackupExample = "mysqldump";
 
     private readonly string _root;
     private readonly ServerApplicationPaths _paths;
@@ -69,7 +73,7 @@ public sealed class MigrationInProgressMarkerTests : IDisposable
 
     private string MarkerPath => Path.Combine(_paths.DataPath, MarkerFileName);
 
-    [Fact]
+    [MigrationsFact]
     public async Task MigrateStepAsync_ProviderWithoutTransactionalMigrations_NamesEachSchemaMigrationWhileItRunsAndLeavesNoFile()
     {
         WriteServerConfiguration(wizardCompleted: false);
@@ -85,7 +89,7 @@ public sealed class MigrationInProgressMarkerTests : IDisposable
         Assert.Equal(schemaMigrations, _observer.MarkedMigrations.Distinct().Order(StringComparer.Ordinal));
     }
 
-    [Fact]
+    [MigrationsFact]
     public async Task MigrateStepAsync_FailingSchemaMigration_LeavesAMarkerThatNamesIt()
     {
         WriteServerConfiguration(wizardCompleted: false);
@@ -107,7 +111,7 @@ public sealed class MigrationInProgressMarkerTests : IDisposable
         Assert.Empty(await GetAppliedMigrationIdsAsync(firstMigration));
     }
 
-    [Fact]
+    [MigrationsFact]
     public async Task MigrateStepAsync_FailingSchemaMigration_LogsWhereTheMarkerIsAndWhatToDo()
     {
         WriteServerConfiguration(wizardCompleted: false);
@@ -121,10 +125,69 @@ public sealed class MigrationInProgressMarkerTests : IDisposable
         var logged = Assert.Single(CriticalMessages(), message => message.Contains(MarkerPath, StringComparison.Ordinal));
         Assert.Contains(firstMigration, logged, StringComparison.Ordinal);
         Assert.Contains(RestoreInstruction, logged, StringComparison.Ordinal);
+        Assert.Contains(EngineBackupExample, logged, StringComparison.Ordinal);
         Assert.Contains("then delete", logged, StringComparison.Ordinal);
+        Assert.Contains("does not repair the database", logged, StringComparison.Ordinal);
     }
 
-    [Fact]
+    [MigrationsFact]
+    public async Task MigrateStepAsync_FailingSchemaMigrationOnAProviderThatTookNoSnapshot_DoesNotAskForARollbackAndSaysWhatToDo()
+    {
+        WriteServerConfiguration(wizardCompleted: false);
+        var provider = new NonTransactionalProvider(_provider, snapshotKey: string.Empty);
+        var service = CreateService(provider, CreateBackupServiceMock());
+        await service.CheckFirstTimeRunOrMigration(_paths, new StartupOptions());
+        await service.PrepareSystemForMigration(NullLogger.Instance);
+        await CreateConflictingTableAsync();
+
+        await Assert.ThrowsAnyAsync<Exception>(() => service.MigrateStepAsync(JellyfinMigrationStageTypes.CoreInitialisation, _serviceProviders[^1]));
+
+        Assert.Empty(provider.RestoredKeys);
+        Assert.DoesNotContain(_logs.Entries, entry => entry.Message.Contains("rollback JellyfinDb", StringComparison.Ordinal));
+        var logged = Assert.Single(CriticalMessages(), message => message.Contains(MarkerPath, StringComparison.Ordinal));
+        Assert.Contains("takes no snapshot", logged, StringComparison.Ordinal);
+        Assert.Contains("did not try to roll the database back", logged, StringComparison.Ordinal);
+        Assert.Contains(RestoreInstruction, logged, StringComparison.Ordinal);
+        Assert.Contains(EngineBackupExample, logged, StringComparison.Ordinal);
+        Assert.DoesNotContain(CriticalMessages(), message => message.Contains("Could not rollback", StringComparison.Ordinal));
+    }
+
+    [MigrationsFact]
+    public async Task MigrateStepAsync_FailingSchemaMigrationOnAProviderThatTookASnapshot_RollsBackFromItAndSaysWhatElseToDo()
+    {
+        WriteServerConfiguration(wizardCompleted: false);
+        var provider = new NonTransactionalProvider(_provider, snapshotKey: "snapshot-1");
+        var service = CreateService(provider, CreateBackupServiceMock());
+        await service.CheckFirstTimeRunOrMigration(_paths, new StartupOptions());
+        await service.PrepareSystemForMigration(NullLogger.Instance);
+        await CreateConflictingTableAsync();
+
+        await Assert.ThrowsAnyAsync<Exception>(() => service.MigrateStepAsync(JellyfinMigrationStageTypes.CoreInitialisation, _serviceProviders[^1]));
+
+        Assert.Equal(["snapshot-1"], provider.RestoredKeys);
+        var logged = Assert.Single(CriticalMessages(), message => message.Contains(MarkerPath, StringComparison.Ordinal));
+        Assert.Contains("the log above says whether that succeeded", logged, StringComparison.Ordinal);
+        Assert.DoesNotContain("takes no snapshot", logged, StringComparison.Ordinal);
+        Assert.Contains(RestoreInstruction, logged, StringComparison.Ordinal);
+    }
+
+    [MigrationsFact]
+    public async Task MigrateStepAsync_FailingSchemaMigrationOnAProviderWithTransactionalMigrations_StillAsksForTheRollbackWithAnEmptyKey()
+    {
+        WriteServerConfiguration(wizardCompleted: false);
+        var provider = new NonTransactionalProvider(_provider, snapshotKey: string.Empty, transactional: true);
+        var service = CreateService(provider, CreateBackupServiceMock());
+        await service.CheckFirstTimeRunOrMigration(_paths, new StartupOptions());
+        await service.PrepareSystemForMigration(NullLogger.Instance);
+        await CreateConflictingTableAsync();
+
+        await Assert.ThrowsAnyAsync<Exception>(() => service.MigrateStepAsync(JellyfinMigrationStageTypes.CoreInitialisation, _serviceProviders[^1]));
+
+        Assert.Equal([string.Empty], provider.RestoredKeys);
+        Assert.False(File.Exists(MarkerPath));
+    }
+
+    [MigrationsFact]
     public async Task MigrateStepAsync_MarkerCannotBeDeletedAfterTheMigrationWasApplied_SaysSoAndDoesNotRollBack()
     {
         WriteServerConfiguration(wizardCompleted: false);
@@ -146,7 +209,7 @@ public sealed class MigrationInProgressMarkerTests : IDisposable
         Assert.True(Directory.Exists(MarkerPath));
     }
 
-    [Fact]
+    [MigrationsFact]
     public async Task MigrateStepAsync_MigrationLeavesNoHistoryRow_KeepsTheMarkerAndDoesNotRepeat()
     {
         WriteServerConfiguration(wizardCompleted: false);
@@ -164,7 +227,7 @@ public sealed class MigrationInProgressMarkerTests : IDisposable
         Assert.Equal(firstMigration, marker.RootElement.GetProperty("MigrationId").GetString());
     }
 
-    [Fact]
+    [MigrationsFact]
     public async Task MigrateStepAsync_MarkerCannotBeWritten_DoesNotStartTheMigrationAndSaysSo()
     {
         WriteServerConfiguration(wizardCompleted: false);
@@ -184,7 +247,7 @@ public sealed class MigrationInProgressMarkerTests : IDisposable
         Assert.True(Directory.Exists(MarkerPath));
     }
 
-    [Fact]
+    [MigrationsFact]
     public async Task MigrateStepAsync_ProviderWithTransactionalMigrations_NeverWritesTheMarker()
     {
         WriteServerConfiguration(wizardCompleted: false);
@@ -201,7 +264,7 @@ public sealed class MigrationInProgressMarkerTests : IDisposable
         Assert.False(File.Exists(MarkerPath));
     }
 
-    [Fact]
+    [MigrationsFact]
     public async Task MigrateStepAsync_FailingSchemaMigrationOnAProviderWithTransactionalMigrations_LeavesNoMarker()
     {
         WriteServerConfiguration(wizardCompleted: false);
@@ -216,7 +279,7 @@ public sealed class MigrationInProgressMarkerTests : IDisposable
         Assert.DoesNotContain(CriticalMessages(), message => message.Contains(MarkerFileName, StringComparison.Ordinal));
     }
 
-    [Fact]
+    [MigrationsFact]
     public async Task CheckFirstTimeRunOrMigration_AfterFailedSchemaMigration_RefusesToStartAndNamesTheMigration()
     {
         WriteServerConfiguration(wizardCompleted: false);
@@ -241,7 +304,7 @@ public sealed class MigrationInProgressMarkerTests : IDisposable
         Assert.Empty(await GetAppliedMigrationIdsAsync(firstMigration));
     }
 
-    [Fact]
+    [MigrationsFact]
     public async Task MigrateStepAsync_AfterFailedSchemaMigration_RefusesToMigrateAndLeavesTheDatabaseAlone()
     {
         WriteServerConfiguration(wizardCompleted: false);
@@ -277,7 +340,7 @@ public sealed class MigrationInProgressMarkerTests : IDisposable
         Assert.Equal(0, _observer.CommandCount);
     }
 
-    [Fact]
+    [MigrationsFact]
     public async Task CheckFirstTimeRunOrMigration_StrayMarkerOnProviderWithTransactionalMigrations_Refuses()
     {
         WriteServerConfiguration(wizardCompleted: false);
@@ -307,7 +370,7 @@ public sealed class MigrationInProgressMarkerTests : IDisposable
         Assert.True(File.Exists(MarkerPath));
     }
 
-    [Theory]
+    [MigrationsTheory]
     [InlineData(null)]
     [InlineData("backup.zip")]
     public async Task CheckFirstTimeRunOrMigration_MarkerNamesAMigrationThatIsRecorded_DeletesItAndContinues(string? restoreArchive)
@@ -326,7 +389,7 @@ public sealed class MigrationInProgressMarkerTests : IDisposable
         Assert.Equal(criticalBefore, CriticalMessages().Length);
     }
 
-    [Fact]
+    [MigrationsFact]
     public async Task MigrateStepAsync_MarkerCouldNotBeDeletedAfterTheMigrationWasApplied_DeletesItAndDoesNotRepeatIt()
     {
         WriteServerConfiguration(wizardCompleted: false);
@@ -350,7 +413,7 @@ public sealed class MigrationInProgressMarkerTests : IDisposable
         Assert.Equal(schemaMigrations, await GetAppliedMigrationIdsAsync(schemaMigrations));
     }
 
-    [Fact]
+    [MigrationsFact]
     public async Task CheckFirstTimeRunOrMigration_MarkerNamesARecordedMigrationButCannotBeDeleted_RefusesAndSaysSo()
     {
         await MigrateEverythingAsync();
@@ -397,7 +460,7 @@ public sealed class MigrationInProgressMarkerTests : IDisposable
         Assert.True(File.Exists(MarkerPath));
     }
 
-    [Fact]
+    [MigrationsFact]
     public async Task CheckFirstTimeRunOrMigration_MarkerNamesARecordedMigrationOfAnotherProvider_Refuses()
     {
         await MigrateEverythingAsync();
@@ -412,7 +475,7 @@ public sealed class MigrationInProgressMarkerTests : IDisposable
         Assert.True(File.Exists(MarkerPath));
     }
 
-    [Fact]
+    [MigrationsFact]
     public async Task CheckFirstTimeRunOrMigration_MarkerWithoutAMigratedDatabase_RefusesAndCreatesNothing()
     {
         WriteServerConfiguration(wizardCompleted: true);
@@ -437,8 +500,9 @@ public sealed class MigrationInProgressMarkerTests : IDisposable
         var exception = await Assert.ThrowsAsync<InvalidOperationException>(() => service.CheckFirstTimeRunOrMigration(_paths, new StartupOptions { RestoreArchive = "backup.zip" }));
 
         Assert.Contains("--restore-archive", exception.Message, StringComparison.Ordinal);
-        Assert.Contains("cannot repair the database schema", exception.Message, StringComparison.Ordinal);
-        Assert.Contains("restore the database dump", exception.Message, StringComparison.Ordinal);
+        Assert.Contains("does not repair the database", exception.Message, StringComparison.Ordinal);
+        Assert.Contains("--mode MigrateSystem", exception.Message, StringComparison.Ordinal);
+        Assert.Contains(EngineBackupExample, exception.Message, StringComparison.Ordinal);
         Assert.Contains(RestoreInstruction, exception.Message, StringComparison.Ordinal);
         Assert.Equal(exception.Message, Assert.Single(CriticalMessages()));
     }
@@ -475,7 +539,7 @@ public sealed class MigrationInProgressMarkerTests : IDisposable
         Assert.Equal(0, _observer.CommandCount);
     }
 
-    [Fact]
+    [MigrationsFact]
     public async Task MigrateStepAsync_MarkerDeletedAfterRestore_MigratesAndLeavesNoMarker()
     {
         WriteServerConfiguration(wizardCompleted: false);
@@ -540,7 +604,23 @@ public sealed class MigrationInProgressMarkerTests : IDisposable
         return new JellyfinDbContext(options, NullLogger<JellyfinDbContext>.Instance, _provider, new NoLockBehavior(NullLogger<NoLockBehavior>.Instance));
     }
 
-    private JellyfinMigrationService CreateService(IJellyfinDatabaseProvider provider)
+    private static IBackupService CreateBackupServiceMock()
+    {
+        var backupService = new Mock<IBackupService>();
+        backupService
+            .Setup(e => e.CreateBackupAsync(It.IsAny<BackupOptionsDto>()))
+            .ReturnsAsync(new BackupManifestDto
+            {
+                ServerVersion = new Version(1, 0),
+                BackupEngineVersion = new Version(1, 0),
+                DateCreated = DateTimeOffset.UtcNow,
+                Path = Path.Combine(Path.GetTempPath(), "jellyfin-no-such-backup.zip"),
+                Options = new BackupOptionsDto()
+            });
+        return backupService.Object;
+    }
+
+    private JellyfinMigrationService CreateService(IJellyfinDatabaseProvider provider, IBackupService? backupService = null)
     {
         var contextFactory = new TestDbContextFactory(CreateDbContext);
         var serviceProvider = new ServiceCollection()
@@ -556,7 +636,8 @@ public sealed class MigrationInProgressMarkerTests : IDisposable
             serviceProvider.GetRequiredService<ILoggerFactory>(),
             serviceProvider.GetRequiredService<IStartupLogger<JellyfinMigrationService>>(),
             _paths,
-            jellyfinDatabaseProvider: provider);
+            backupService,
+            provider);
     }
 
     private async Task CreateConflictingTableAsync()
@@ -612,11 +693,23 @@ public sealed class MigrationInProgressMarkerTests : IDisposable
     private sealed class NonTransactionalProvider : IJellyfinDatabaseProvider
     {
         private readonly IJellyfinDatabaseProvider _inner;
+        private readonly string? _snapshotKey;
+        private readonly bool _transactional;
 
-        public NonTransactionalProvider(IJellyfinDatabaseProvider inner)
+        /// <summary>
+        /// Initializes a new instance of the <see cref="NonTransactionalProvider"/> class.
+        /// </summary>
+        /// <param name="inner">The provider that does the work.</param>
+        /// <param name="snapshotKey">The key that the provider reports for its snapshot, where the empty key means that none was taken. The snapshot of the inner provider when null.</param>
+        /// <param name="transactional">A value indicating whether the provider reports that it undoes a failed migration.</param>
+        public NonTransactionalProvider(IJellyfinDatabaseProvider inner, string? snapshotKey = null, bool transactional = false)
         {
             _inner = inner;
+            _snapshotKey = snapshotKey;
+            _transactional = transactional;
         }
+
+        public List<string> RestoredKeys { get; } = [];
 
         public IDbContextFactory<JellyfinDbContext>? DbContextFactory
         {
@@ -624,7 +717,7 @@ public sealed class MigrationInProgressMarkerTests : IDisposable
             set => _inner.DbContextFactory = value;
         }
 
-        public bool SupportsTransactionalMigrations => false;
+        public bool SupportsTransactionalMigrations => _transactional;
 
         public void Initialise(DbContextOptionsBuilder options, DatabaseConfigurationOptions databaseConfiguration)
             => _inner.Initialise(options, databaseConfiguration);
@@ -637,9 +730,14 @@ public sealed class MigrationInProgressMarkerTests : IDisposable
 
         public Task RunShutdownTask(CancellationToken cancellationToken) => _inner.RunShutdownTask(cancellationToken);
 
-        public Task<string> MigrationBackupFast(CancellationToken cancellationToken) => _inner.MigrationBackupFast(cancellationToken);
+        public Task<string> MigrationBackupFast(CancellationToken cancellationToken)
+            => _snapshotKey is null ? _inner.MigrationBackupFast(cancellationToken) : Task.FromResult(_snapshotKey);
 
-        public Task RestoreBackupFast(string key, CancellationToken cancellationToken) => _inner.RestoreBackupFast(key, cancellationToken);
+        public Task RestoreBackupFast(string key, CancellationToken cancellationToken)
+        {
+            RestoredKeys.Add(key);
+            return _snapshotKey is null ? _inner.RestoreBackupFast(key, cancellationToken) : Task.CompletedTask;
+        }
 
         public Task DeleteBackup(string key) => _inner.DeleteBackup(key);
 

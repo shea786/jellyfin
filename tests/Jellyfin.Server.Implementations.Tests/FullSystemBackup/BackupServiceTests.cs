@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.IO.Compression;
 using System.Linq;
+using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Threading;
@@ -26,6 +27,7 @@ using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Moq;
+using MySqlConnector;
 using Npgsql;
 using Xunit;
 using BaseItemKind = Jellyfin.Data.Enums.BaseItemKind;
@@ -59,6 +61,7 @@ public sealed class BackupServiceTests : DatabaseTestFixture
     private readonly List<string> _unsavedWhenScopeClosed = [];
     private int _purgeCalls;
     private bool _failCompletion;
+    private bool _supportsTransactionalMigrations = true;
 
     public BackupServiceTests()
     {
@@ -278,6 +281,11 @@ public sealed class BackupServiceTests : DatabaseTestFixture
                 var postgresViolation = Assert.IsType<PostgresException>(exception.InnerException);
                 Assert.Equal(PostgresErrorCodes.UniqueViolation, postgresViolation.SqlState);
                 break;
+            case TestDbProvider.MySql:
+            case TestDbProvider.MariaDb:
+                var mySqlViolation = Assert.IsType<MySqlException>(exception.InnerException);
+                Assert.Equal(MySqlErrorCode.DuplicateKeyEntry, mySqlViolation.ErrorCode);
+                break;
             default:
                 throw new NotSupportedException($"No unique violation is known for {DbProvider}.");
         }
@@ -402,7 +410,7 @@ public sealed class BackupServiceTests : DatabaseTestFixture
         Assert.Equal(before, await SnapshotAsync(cancellationToken).ConfigureAwait(true));
     }
 
-    [Fact]
+    [MigrationsFact]
     public async Task RestoreBackupAsync_WithHistoryFromAnotherSchema_LeavesNoPendingMigrations()
     {
         var (_, pending) = await RestoreWithRewrittenHistoryAsync().ConfigureAwait(true);
@@ -410,7 +418,7 @@ public sealed class BackupServiceTests : DatabaseTestFixture
         Assert.Empty(pending);
     }
 
-    [Fact]
+    [MigrationsFact]
     public async Task RestoreBackupAsync_KeepsTheSchemaMigrationRowsOfTheTarget()
     {
         var (history, _) = await RestoreWithRewrittenHistoryAsync().ConfigureAwait(true);
@@ -421,7 +429,7 @@ public sealed class BackupServiceTests : DatabaseTestFixture
         Assert.All(schemaMigrationIds, id => Assert.Contains(id, history));
     }
 
-    [Fact]
+    [MigrationsFact]
     public async Task RestoreBackupAsync_ReplacesCodeRoutinesWithThoseOfTheArchive()
     {
         var (history, _) = await RestoreWithRewrittenHistoryAsync().ConfigureAwait(true);
@@ -430,7 +438,7 @@ public sealed class BackupServiceTests : DatabaseTestFixture
         Assert.DoesNotContain(RoutineOnlyInTargetId, history);
     }
 
-    [Fact]
+    [MigrationsFact]
     public async Task RestoreBackupAsync_DoesNotTakeOverSchemaMigrationsOfAnotherEngine()
     {
         var (history, _) = await RestoreWithRewrittenHistoryAsync().ConfigureAwait(true);
@@ -438,7 +446,7 @@ public sealed class BackupServiceTests : DatabaseTestFixture
         Assert.DoesNotContain(ForeignSchemaMigrationId, history);
     }
 
-    [Fact]
+    [MigrationsFact]
     public async Task RestoreBackupAsync_DoesNotTakeOverRoutinesThisServerNoLongerHas()
     {
         var (history, _) = await RestoreWithRewrittenHistoryAsync().ConfigureAwait(true);
@@ -446,7 +454,7 @@ public sealed class BackupServiceTests : DatabaseTestFixture
         Assert.DoesNotContain(RemovedRoutineId, history);
     }
 
-    [Fact]
+    [MigrationsFact]
     public async Task RestoreBackupAsync_WithArchiveOfTheSameSchema_RestoresTheHistoryAsItWas()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
@@ -712,7 +720,7 @@ public sealed class BackupServiceTests : DatabaseTestFixture
         Assert.DoesNotContain(_logger.Entries, e => e.Message.Contains("Rock", StringComparison.Ordinal));
     }
 
-    [Fact]
+    [MigrationsFact]
     public async Task RestoreBackupAsync_IntoADatabaseThatWasOnlySeeded_CreatesTheSchemaAndRestoresTheRows()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
@@ -739,6 +747,92 @@ public sealed class BackupServiceTests : DatabaseTestFixture
             expected.Where(e => e.StartsWith("User ", StringComparison.Ordinal)),
             (await restored.Users.AsNoTracking().OrderBy(e => e.Username).ToListAsync(cancellationToken).ConfigureAwait(true)).Select(e => $"User {e.Id} {e.Username}"));
         Assert.Equal(2, await restored.BaseItems.CountAsync(e => e.Type == "Movie", cancellationToken).ConfigureAwait(true));
+    }
+
+    [MigrationsFact]
+    public async Task RestoreBackupAsync_WhenMigrationsCannotBeUndoneAndSomeArePending_RefusesAndLeavesTheDatabaseAlone()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        await SeedAsync(cancellationToken).ConfigureAwait(true);
+        var manifest = await CreateBackupWithFilesAsync().ConfigureAwait(true);
+        _supportsTransactionalMigrations = false;
+        var filesBefore = ReadFilesOfTheServer();
+
+        using var unmigratedDatabase = TestDatabaseEnvironment.Backend.CreateEmpty();
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => CreateBackupService(unmigratedDatabase.Options).RestoreBackupAsync(manifest.Path)).ConfigureAwait(true);
+
+        Assert.Contains("--mode MigrateSystem", exception.Message, StringComparison.Ordinal);
+        Assert.Contains("Nothing was restored", exception.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain("Start the server once", exception.Message, StringComparison.Ordinal);
+        Assert.Equal(0, _purgeCalls);
+        Assert.Equal(filesBefore, ReadFilesOfTheServer());
+        await using var untouched = CreateDbContext(unmigratedDatabase.Options);
+        Assert.NotEmpty(await untouched.Database.GetPendingMigrationsAsync(cancellationToken).ConfigureAwait(true));
+        Assert.Empty(await untouched.Database.GetAppliedMigrationsAsync(cancellationToken).ConfigureAwait(true));
+    }
+
+    // The marker does not depend on the schema of the database, so this runs on every engine.
+    [Fact]
+    public async Task RestoreBackupAsync_WhileAMigrationIsMarkedAsUnfinished_RefusesAndLeavesFilesAndDatabaseAlone()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        await SeedAsync(cancellationToken).ConfigureAwait(true);
+        var manifest = await CreateBackupWithFilesAsync().ConfigureAwait(true);
+        _supportsTransactionalMigrations = false;
+        var markerPath = Path.Combine(_testRoot, "Data", BackupService.MigrationInProgressMarkerFileName);
+        await File.WriteAllTextAsync(markerPath, "{}", cancellationToken).ConfigureAwait(true);
+        var expected = await SnapshotAsync(cancellationToken).ConfigureAwait(true);
+        var filesBefore = ReadFilesOfTheServer();
+
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => CreateBackupService().RestoreBackupAsync(manifest.Path)).ConfigureAwait(true);
+
+        Assert.Contains(markerPath, exception.Message, StringComparison.Ordinal);
+        Assert.Contains("mysqldump", exception.Message, StringComparison.Ordinal);
+        Assert.Contains("--mode MigrateSystem", exception.Message, StringComparison.Ordinal);
+        Assert.Contains("Nothing was restored", exception.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain("Start the server once", exception.Message, StringComparison.Ordinal);
+        Assert.Equal(0, _purgeCalls);
+        Assert.Equal(filesBefore, ReadFilesOfTheServer());
+        Assert.Equal(expected, await SnapshotAsync(cancellationToken).ConfigureAwait(true));
+    }
+
+    [Fact]
+    public async Task RestoreBackupAsync_WithNoMarker_RestoresFilesOfTheArchive()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        await SeedAsync(cancellationToken).ConfigureAwait(true);
+        var manifest = await CreateBackupWithFilesAsync().ConfigureAwait(true);
+
+        await CreateBackupService().RestoreBackupAsync(manifest.Path).ConfigureAwait(true);
+
+        Assert.Equal(
+            "box in the archive",
+            await File.ReadAllTextAsync(Path.Combine(_testRoot, "Data", "collections", "box.txt"), cancellationToken).ConfigureAwait(true));
+        Assert.Equal(
+            "<archived />",
+            await File.ReadAllTextAsync(Path.Combine(_configurationDirectoryPath, "system.xml"), cancellationToken).ConfigureAwait(true));
+    }
+
+    [Fact]
+    public async Task RestoreBackupAsync_WhenMigrationsCannotBeUndoneAndNoneArePending_RestoresTheRows()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        await SeedAsync(cancellationToken).ConfigureAwait(true);
+        var expected = await SnapshotAsync(cancellationToken).ConfigureAwait(true);
+        _supportsTransactionalMigrations = false;
+        var backupService = CreateBackupService();
+        var manifest = await backupService.CreateBackupAsync(new BackupOptionsDto()).ConfigureAwait(true);
+        await using (var ctx = CreateDbContext())
+        {
+            ctx.BaseItems.Add(CreateMovieEntity(Guid.NewGuid(), "Added After Backup"));
+            await ctx.SaveChangesAsync(cancellationToken).ConfigureAwait(true);
+        }
+
+        await backupService.RestoreBackupAsync(manifest.Path).ConfigureAwait(true);
+
+        Assert.Equal(expected, await SnapshotAsync(cancellationToken).ConfigureAwait(true));
     }
 
     [Fact]
@@ -780,6 +874,48 @@ public sealed class BackupServiceTests : DatabaseTestFixture
         await using var restored = CreateDbContext();
         var userData = await restored.UserData.AsNoTracking().SingleAsync(cancellationToken).ConfigureAwait(true);
         Assert.Equal(KeyNormalizer.NormalizeUserDataKey(key), userData.CustomDataKey);
+    }
+
+    // The bound counts the characters of a column on MySQL and MariaDB and the UTF-16 units of a string everywhere
+    // else. A value of four-byte characters that is cut in the middle of a pair would be rejected by a utf8mb4 column.
+    [Theory]
+    [InlineData(0)]
+    [InlineData(1)]
+    public async Task RestoreBackupAsync_WithKeysOfFourByteCharactersOverTheBound_RestoresThemShortenedWholeCharacters(int padding)
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        const string Clapper = "\U0001F3AC";
+        var deviceId = new string('d', padding) + string.Concat(Enumerable.Repeat(Clapper, KeyNormalizer.DeviceIdMaxLength));
+        var dataKey = new string('k', padding) + string.Concat(Enumerable.Repeat(Clapper, KeyNormalizer.UserDataKeyMaxLength));
+        await SeedAsync(cancellationToken).ConfigureAwait(true);
+        await using (var ctx = CreateDbContext())
+        {
+            var userId = await ctx.Users.Select(e => e.Id).FirstAsync(cancellationToken).ConfigureAwait(true);
+            ctx.UserData.Add(new UserData { CustomDataKey = "placeholder", ItemId = MovieId, UserId = userId, Item = null, User = null });
+            await ctx.SaveChangesAsync(cancellationToken).ConfigureAwait(true);
+        }
+
+        var backupService = CreateBackupService();
+        var manifest = await backupService.CreateBackupAsync(new BackupOptionsDto()).ConfigureAwait(true);
+        await RewriteJsonArrayAsync(manifest.Path, "Devices", devices => devices[0]!["DeviceId"] = deviceId, cancellationToken).ConfigureAwait(true);
+        await RewriteJsonArrayAsync(manifest.Path, "UserData", rows => rows[0]!["CustomDataKey"] = dataKey, cancellationToken).ConfigureAwait(true);
+
+        await backupService.RestoreBackupAsync(manifest.Path).ConfigureAwait(true);
+
+        await using var restored = CreateDbContext();
+        var restoredDeviceId = (await restored.Devices.AsNoTracking().SingleAsync(cancellationToken).ConfigureAwait(true)).DeviceId;
+        var restoredDataKey = (await restored.UserData.AsNoTracking().SingleAsync(cancellationToken).ConfigureAwait(true)).CustomDataKey;
+        Assert.Equal(KeyNormalizer.NormalizeDeviceId(deviceId), restoredDeviceId);
+        Assert.Equal(KeyNormalizer.NormalizeUserDataKey(dataKey), restoredDataKey);
+        Assert.InRange(restoredDeviceId.Length, 1, KeyNormalizer.DeviceIdMaxLength);
+        Assert.InRange(restoredDataKey.Length, 1, KeyNormalizer.UserDataKeyMaxLength);
+        Assert.Contains(Clapper, restoredDeviceId, StringComparison.Ordinal);
+        Assert.Contains(Clapper, restoredDataKey, StringComparison.Ordinal);
+
+        // A lone surrogate cannot be encoded, which is also why a utf8mb4 column would reject it.
+        var strict = new UTF8Encoding(false, true);
+        Assert.NotEmpty(strict.GetBytes(restoredDeviceId));
+        Assert.NotEmpty(strict.GetBytes(restoredDataKey));
     }
 
     [Fact]
@@ -1200,6 +1336,31 @@ public sealed class BackupServiceTests : DatabaseTestFixture
         return ids;
     }
 
+    private async Task<BackupManifestDto> CreateBackupWithFilesAsync()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var collections = Path.Combine(_testRoot, "Data", "collections");
+        Directory.CreateDirectory(collections);
+        await File.WriteAllTextAsync(Path.Combine(collections, "box.txt"), "box in the archive", cancellationToken).ConfigureAwait(false);
+        await File.WriteAllTextAsync(Path.Combine(_configurationDirectoryPath, "system.xml"), "<archived />", cancellationToken).ConfigureAwait(false);
+        var manifest = await CreateBackupService().CreateBackupAsync(new BackupOptionsDto()).ConfigureAwait(false);
+
+        // What is on disk after the backup differs from what the archive holds, so a restore that wrote files would show.
+        File.Delete(Path.Combine(collections, "box.txt"));
+        await File.WriteAllTextAsync(Path.Combine(_configurationDirectoryPath, "system.xml"), "<changed after the backup />", cancellationToken).ConfigureAwait(false);
+        return manifest;
+    }
+
+    private List<string> ReadFilesOfTheServer()
+    {
+        return new[] { _configurationDirectoryPath, Path.Combine(_testRoot, "Data") }
+            .Where(Directory.Exists)
+            .SelectMany(root => Directory.EnumerateFiles(root, "*", SearchOption.AllDirectories))
+            .Order(StringComparer.Ordinal)
+            .Select(file => file + "=" + File.ReadAllText(file))
+            .ToList();
+    }
+
     private BackupService CreateBackupService(DbContextOptions<JellyfinDbContext>? dbOptions = null)
     {
         var factory = new Mock<IDbContextFactory<JellyfinDbContext>>();
@@ -1221,6 +1382,7 @@ public sealed class BackupServiceTests : DatabaseTestFixture
 
         var jellyfinDatabaseProvider = new Mock<IJellyfinDatabaseProvider>();
         jellyfinDatabaseProvider.Setup(p => p.RunScheduledOptimisation(It.IsAny<CancellationToken>())).Returns(Task.CompletedTask);
+        jellyfinDatabaseProvider.Setup(p => p.SupportsTransactionalMigrations).Returns(() => _supportsTransactionalMigrations);
         jellyfinDatabaseProvider
             .Setup(p => p.PurgeDatabase(It.IsAny<JellyfinDbContext>(), It.IsAny<IEnumerable<string>>()))
             .Returns((JellyfinDbContext context, IEnumerable<string> tableNames) =>

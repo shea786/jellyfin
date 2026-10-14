@@ -2,6 +2,8 @@ using System;
 using System.Linq;
 using Jellyfin.Database.Implementations.Entities;
 using Jellyfin.Database.Implementations.ValueConverters;
+using Jellyfin.Database.Providers.MySql;
+using Jellyfin.Database.Testing;
 using Jellyfin.Server.Implementations.Tests.Data;
 using MediaBrowser.Controller.Entities;
 using Microsoft.EntityFrameworkCore;
@@ -143,7 +145,22 @@ public sealed class DateTimeRoundTripTests : JellyfinDbTestFixture
             .ToList();
 
         Assert.NotEmpty(properties);
-        Assert.All(properties, p => Assert.IsType<UtcDateTimeConverter>(p.GetValueConverter()));
+        var isMySqlFamily = TestDatabaseEnvironment.Provider is TestDbProvider.MySql or TestDbProvider.MariaDb;
+        Assert.All(
+            properties,
+            p =>
+            {
+                var converter = p.GetValueConverter();
+                if (isMySqlFamily)
+                {
+                    // The column of these engines cannot hold the last tick of DateTime.MaxValue, so the converter also clamps it.
+                    Assert.IsType<ClampedUtcDateTimeConverter>(converter);
+                }
+                else
+                {
+                    Assert.IsType<UtcDateTimeConverter>(converter);
+                }
+            });
     }
 
     private static void AssertUtc(DateTime expected, DateTime? actual)
