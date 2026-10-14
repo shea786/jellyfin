@@ -157,3 +157,11 @@ The step 19 gate showed that L2's premise is false for several key-class columns
   - **Where the entity itself is the cached object** (users, devices, user data, display preferences), the hook is the safety net and cleaning the entity keeps memory and storage in step.
   - The N6 rule stands: the hook never touches key or unique-index columns.
   - The user approved a fourth rework round for this, beyond the usual limit of three.
+
+## Amendments (step 24 gate, 2026-10-14)
+
+- **L6. Text-class columns on MySQL and MariaDB, as built (refines L3).**
+  - **Prefix cap.** `IndexPrefixLengthConvention` gives each text-class column in an index a prefix length, so that the index fits in 3072 bytes at 4 bytes a character. A single prefix is at most 512 characters, which leaves room for the other columns of a composite index.
+  - **No uniqueness over a prefix.** A primary key, a unique index or a foreign key over a text column that has no maximum length is refused when the model is built, with a message naming the column. A prefix would make two different values equal for the index.
+  - **Unindexed text is `longtext`.** `UnindexedTextConvention` stores every text column that is not in a key, a foreign key or an index as `longtext`, whatever maximum length the model gives it. A `varchar(n)` column would reject a longer value, while SQLite and PostgreSQL store it whole.
+  - **Sorting.** MariaDB compares only the first `max_sort_length` bytes (1024 by default) of a `longtext` value in `ORDER BY`; MySQL 8.4 does not limit it for this collation. Two names longer than 1024 bytes that share their first 1024 bytes can therefore come back in either order on MariaDB. The how-to mentions it. Raising the setting costs sort memory and is left to the operator.

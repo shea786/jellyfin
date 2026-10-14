@@ -102,3 +102,8 @@
 - **S1. On SQLite the retry does not run.** The EF transaction takes SQLite's write lock at `BEGIN`; another connection's `INSERT` gets `SQLITE_BUSY` immediately (probed), so a read-then-insert race cannot happen and no unique violation from a concurrent writer reaches the retry. The Consequences sentence "a save that loses the ItemValues race now retries instead of failing" therefore describes engines with concurrent writers, not SQLite. The tests stage the race on the attempt's own connection to raise a real constraint violation, which is valid for testing the retry.
 - **S2. BUSY and LOCKED are not classified as retryable** because `OptimisticLockBehavior` and the busy timeout already retry the command, and BUSY never follows a stale read. A unique violation caused by a bug is retried twice and then rethrown.
 - **S3. Test (a)1, `ConcurrencyToken_SecondStaleSaveThrows`,** is added to step 07 as its first commit, pinning existing behaviour.
+
+## Amendments (step 24 gate, 2026-10-14)
+
+- **S4. MySQL and MariaDB 1205 (lock wait timeout) stays retryable.** With `innodb_rollback_on_timeout` off, which is the default, only the statement is rolled back and the transaction stays open with its locks. The retry does not continue that transaction: every attempt gets a new context and a new transaction, and the failed one is rolled back when its context is disposed. Tests on both servers show that only the statement rolls back, that the error is classified as retryable, and that the retry runs the work again in a new transaction.
+  - **Worst case.** Three attempts each wait out `innodb_lock_wait_timeout`, so a save behind a lock that is never released fails after about three times that setting: about 150 seconds at the default of 50.

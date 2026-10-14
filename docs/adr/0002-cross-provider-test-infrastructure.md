@@ -162,3 +162,7 @@
   - The opposite direction is not guarded: `KnownGap.On(gap, () => SomethingAsync())` binds to `Action` and drops the Task. No call site does this. It is accepted and stated in the harness explainer; a guard (trap test or analyzer rule) is follow-up work if an async span is ever wrapped.
   - Spans that hold two assertions (`ItemValueStringTests` Tags and Genres, `PeopleRepositoryNameOrderTests` Items and count, ascending then descending in `NullOrder` and `StringOrder`) can hide the second assertion on Postgres while the first fails. Accepted: SQLite runs every assertion, and a gap that starts passing fails the test, which forces a re-check.
   - `OnAsync` has no production caller yet. It stays, with its self-tests, for the async repository tests in later steps.
+
+## Amendments (step 24 gate, 2026-10-14)
+
+- **H14. Gap ids.** Every `KnownGaps` entry has a stable id of the form `ENGINE-TOPIC` in capitals, for example `PG-NUL-PARAMETER` or `MARIADB-OUTER-REF-DERIVED`. The id names the engine and the difference, never a document, so H10 still holds. A test refers to the entry by its field, and the skip reason carries the id and the exception, so a skipped row in a log can be traced to its entry. A test checks that the ids are unique.

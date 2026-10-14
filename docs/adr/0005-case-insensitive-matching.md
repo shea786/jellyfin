@@ -209,3 +209,7 @@ SQL `lower()`/`upper()` appears at `PeopleRepository.cs:55-60,182,477,487,492`, 
   - **Passes** 24 of 24 rows and both extra rows (`_` matches one character) on MySQL 8.4.11 and MariaDB 11.4.13.
   - **Cost** at the s05 seed, MySQL / MariaDB median ms, with the plain 26-REPLACE chain in brackets: search provider `zephyr` 63.5 / 65.2 (244.5 / 96.8); activity name 3.5 / 8.4 (38.6 / 14.5); `NameStartsWith` `m` 49 / 33 (215 / 64). The worst case, a single common letter, is about the same as the chain (203 / 69). A regular-expression variant has a better worst case but needs different syntax per server; it is a possible later change, not part of step 24.
   - **Rejected:** `latin1` (15 of 24), `ascii_general_ci` (14), and reading the bytes as latin1, which passes the rows but lets `_` match a byte instead of a character.
+
+## Amendments (step 24 gate, 2026-10-14)
+
+- **R16. The range-filter gap is in the ledger.** R13's known gap for `NameStartsWithOrGreater` and `NameLessThan` with a non-ASCII term is recorded as `MYSQL-SORTNAME-RANGE-CASE` and `MARIADB-SORTNAME-RANGE-CASE`. Each matches only the specific result the server returns, not any assertion failure, so an unrelated regression in those tests still fails.
