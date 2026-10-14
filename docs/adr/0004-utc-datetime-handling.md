@@ -150,3 +150,29 @@
   - History: the wrong variable is already in the Emby code (`2b7a80cfb5`, 2015-04-04). The refactor `11a5551218` (2021-07-09) folded the tag lookup into the condition and carried `year` over. `653df7d8e5` (2021-09-21) changed `DateTimeStyles.None` to `AdjustToUniversal`, and `f8ffccae7f` (2026-07-04) changed only the culture argument. Neither introduced the bug.
   - No upstream PR or issue mentions the tag. It is a candidate for a small standalone upstream fix, like X1, and the user decides.
   - Superseded by the user's ruling: it is fixed as unit X2 (`pr-plan.md` S10).
+
+## Amendments (step 02b, 2026-10-14)
+
+- **R11. Supersedes the sentinel part of R4: date sentinels no longer depend on the server's time zone.** The step 24 gate found the MySQL clamp converter losing `DateTime.MaxValue` under `TZ=Asia/Kolkata`. The same check on the shared converter showed that R4's "shifted on write, exactly as before PR 02" was a real bug, inherited from upstream's SQLite `DateTimeKindValueConverter`:
+  - `MinValue` and `MaxValue` have `Unspecified` kind, so `ToUniversalTime()` treated them as local time.
+  - `MinValue` moved by the zone's year-1 local mean time: about one minute in Europe/London, which includes this machine, and 4h57m in America/New_York. `MaxValue` moved by the current offset: 5h30m in Kolkata, 13h in Auckland.
+  - On PostgreSQL a shifted `MinValue` was a finite `0001-01-01 04:57:00+00` instead of `-infinity`.
+- **Decision (step 02b).** `UtcDateTimeConverter.ToStoredUtc` (internal) keeps the ticks of `MinValue` and `MaxValue` and labels them UTC whatever their kind. Every other value goes through `ToUniversalTime()` as before. On PostgreSQL the sentinels now become `-infinity`/`infinity` and sort first and last.
+  - **Scope.** 0 ticks and `9999-12-31 23:59:59.9999999` are never real local times in this code base. They appear only as sentinels or as the result of clamping, where keeping them is the desired result. One older edge stays: east of UTC, a local value within the offset of `MinValue` is clamped to `MinValue` on the way in.
+  - **Queries.** Checked on SQLite and PostgreSQL under New York and Kolkata: saves, reads, closure parameters, inline `DateTime.MinValue` literals (EF 10 inlines them through the column mapping; PostgreSQL gets `TIMESTAMPTZ '-infinity'`) and `??` sentinels inside `Min`/`Max` all go through the converter. `ExecuteUpdate` `SetProperty` uses the same parameter path but was not probed directly. Constants inside function arguments with no column mapping are still not converted (R8); no production query has one.
+  - **Regression guard.** CI runs in UTC, where the old code passes. The guard tests set `TZ` in-process on Linux, call `TimeZoneInfo.ClearCachedData()` and restore both, in an xUnit collection that runs alone. America/New_York exercises `MinValue`, and Asia/Kolkata exercises `MaxValue`. With the old converter they fail 8 of 46 under `TZ=UTC` on SQLite and PostgreSQL. This guard ships in the upstream series, not only in the fork's CI.
+- **Rows already stored shifted are not repaired.** A repair would have to guess the server's offset at the time of each write. Readers that treat a sentinel as "unset" are protected by `BaseItemMapper.cs:308-312,422`, which turns a `MinValue` into `null` before it is stored. The inventory of columns that can hold a sentinel, adding those R4 missed:
+
+  | Column | Source of a sentinel | Reader that treats it as unset |
+  |---|---|---|
+  | BaseItems `DateCreated`, `DateModified`, `DateLastRefreshed`, `DateLastSaved`, `DateLastMediaAdded` | Mapped to `null`; `FixDates` also nulled year-1 values | Unaffected, the sentinel is never stored |
+  | BaseItems `PremiereDate` | Client or legacy input | `MetadataService.cs:557`: a shifted child date passes `> MinValue` and can give the parent a year-1 premiere date. Existing rows only; rare |
+  | BaseItems `StartDate`, `EndDate` | XMLTV, already UTC | None |
+  | Chapters `ImageDateModified` | `ChapterRepository.cs:102`, `default` when a chapter has no image | None: the tag is computed only when `ImagePath` is set |
+  | BaseItemImageInfos `DateModified` | Remote images left at `default` (`ItemImageProvider.cs:230`, `LibraryManager.cs:3918`, `GuideManager.cs:735`) | Only the image cache tag; old rows keep their old tag |
+  | ApiKeys `DateLastActivity` | Never set by the `ApiKey` constructor | Never read |
+  | Devices `DateCreated`, `DateLastActivity` | `MigrateAuthenticationDb.cs:84-94` on a failed parse | Sorting and the activity refresh only |
+  | UserData `LastPlayedDate` | Client-supplied | Compared in memory with `?? MinValue` only |
+
+  Other "unset" checks R4 did not list read `null`-mapped columns or in-memory values: `MetadataService.cs:572,732,1381,1386`, `BaseItem.cs:1723`, `Folder.cs:244`, `SessionManager.cs:267`, `VersionPlaybackSelector.cs:47`, `VersionResumeData.cs:27`.
+- **Compiled models.** `ToStoredUtc` is internal. If compiled models are ever enabled, the assembly that holds the generated model needs `InternalsVisibleTo`. `dotnet ef dbcontext optimize` fails today anyway, because of the custom `LikeIgnoreAsciiCase` translation.

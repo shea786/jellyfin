@@ -82,3 +82,7 @@ While in this area, every place that compares a stored timestamp for equality wa
 - The commit messages are factual and minimal. Reword them freely.
 - The PR template has a **Code assistance** section. Jellyfin's LLM policy requires you to describe honestly how assistance was used.
 - Expect the question "why now, if nothing changes?". The honest answer is that the rule belongs in shared code, and this is the smallest step that puts it there. It is reasonable to mention it in the Meta discussion as the second small step after the tests-only PR.
+
+## Later correction
+
+The "no regression, no new guarantee" note on sentinels above was right about PR 02 but hid an inherited bug: an `Unspecified` or `Local` sentinel was stored as a value that depended on the server's time zone. Step 02b fixes it. See `02b-utc-sentinels.md` and ADR-0004 R11.
