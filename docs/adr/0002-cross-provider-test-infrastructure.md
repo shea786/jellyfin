@@ -165,4 +165,4 @@
 
 ## Amendments (step 24 gate, 2026-10-14)
 
-- **H14. Gap ids.** Every `KnownGaps` entry has a stable id of the form `ENGINE-TOPIC` in capitals, for example `PG-NUL-PARAMETER` or `MARIADB-OUTER-REF-DERIVED`. The id names the engine and the difference, never a document, so H10 still holds. A test refers to the entry by its field, and the skip reason carries the id and the exception, so a skipped row in a log can be traced to its entry. A test checks that the ids are unique.
+- **H14. Gap ids.** Every `KnownGaps` entry has a stable id of the form `ENGINE-TOPIC` in capitals, for example `PG-NUL-PARAMETER` or `MYSQL-SORTNAME-RANGE-CASE`. The id names the engine and the difference, never a document, so H10 still holds. A test refers to the entry by its field, and the skip reason carries the id and the exception, so a skipped row in a log can be traced to its entry. A test checks that the ids are unique.

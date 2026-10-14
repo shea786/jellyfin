@@ -61,7 +61,7 @@ ADR-0011 names MySQL 8.4 and MariaDB 11.4.7 as supported targets, served by one 
 
 Recorded in the ledger, each keyed to its engine:
 
-- `MARIADB-OUTER-REF-DERIVED`: MariaDB cannot resolve a derived table that refers to the outer item, which the `DatePlayed` sort uses. Step 24b removes it.
+- `MARIADB-OUTER-REF-DERIVED`: MariaDB cannot resolve a derived table that refers to the outer item, which the `DatePlayed` sort uses. Step 24b removed it with a MariaDB-only query rewrite (ADR-0011 F7).
 - `MYSQL-SORTNAME-RANGE-CASE`, `MARIADB-SORTNAME-RANGE-CASE`: the sort name range filters with a non-ASCII term (ADR-0005 R16).
 - Lists of ids larger than `max_allowed_packet` (ADR-0011 F2), and MariaDB's `max_sort_length` (ADR-0009 L6), are documented limits.
 
