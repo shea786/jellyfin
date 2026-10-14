@@ -118,3 +118,25 @@ An independent architecture evaluation, made after the MySQL/MariaDB provider (s
 - **E3. Conformance before features.** Each new engine starts from a fixed hazard checklist and from the whole suite run against a conventions-only provider stub; the brief is written afterwards. The cross-engine conformance kit from step 27a runs on every provider, SQLite and PostgreSQL included. It turns each hazard the suite cannot see (cascade depth, connection charset, host time zone, LIKE metacharacters, large id lists, long composite keys) into a permanent test.
 - **E4. Merged SQLite and PostgreSQL steps are not reworked.** The PostgreSQL template clone, the per-provider conventions and retry classifiers, and the SQLite-only paths stay as they are. The kit covers them instead.
 - **E5. In-tree versus plugin providers is not decided here.** Providers depend only on `Jellyfin.Database.Implementations`, so either route works without code changes. The choice for the upstream submission stays with the project owner, together with the other upstream questions.
+
+## Amendments (contributor workflow, 2026-10-14)
+
+The project owner asked what a contributor has to do per database once this lands. An evaluation of a year of upstream database commits, with an EF 10.0.12 experiment, settled the following. It supersedes "We will add a helper script later" under Consequences.
+
+- **W1. One offline command, matching ids.** A schema change still ships one migration per provider with the identical id. The non-SQLite providers register a design-time `IMigrationsIdGenerator` that reuses the id of the SQLite migration with the same name.
+  - The lookup is by file name in the SQLite provider's `Migrations/` directory, because a provider may only depend on `Jellyfin.Database.Implementations` (ADR-0011).
+  - The generator implements the public interface. Subclassing EF's internal `MigrationsIdGenerator` raises EF1001, which `TreatWarningsAsErrors` turns into a build break.
+  - It is registered through `[assembly: DesignTimeServicesReference]`. EF looks for `IDesignTimeServices` only in the startup assembly, while that attribute is read in both, so a different startup project cannot silently skip the generator.
+  - One command generates the SQLite migration first and then every other provider's. Every design-time factory is offline, so it needs no server and no Docker.
+- **W2. What enforces it.** One test theory over a provider table checks pending model changes and id pairing; each failure message names the command. A migration-contents check compares the operations of every paired id by kind, table and column, ignoring annotations. A `Sql` operation present on one engine only needs an allowlist entry with a reason. A fix for legacy SQLite data may stay SQLite-only; a fix for a bug in current code may not.
+- **W3. Fork-only engines join the same table.** MySQL/MariaDB (step 25) and SQL Server (step 28) add a design-time factory with a fixed server version and rows in the theory, the command and the contents check. MariaDB gets its own pending-changes check.
+- **W4. Escape-hatch order** (refines the dialect policy and E1):
+  1. neutral LINQ;
+  2. a `JellyfinDbFunctions` function with a provider translation, or a provider convention;
+  3. an operation-named default member on `IJellyfinDatabaseProvider`, which is permanent ABI and needs core sign-off;
+  4. a `KnownGaps` entry keyed to the provider, signed off by the provider's owner.
+
+  `ProviderFact(Sqlite)` is only for tests of SQLite itself.
+- **W5. The ban and the kit protect upstream.** The raw-SQL and provider-sniffing ban (E2) and the conformance kit on SQLite and PostgreSQL (E3) ship in the upstream series (step 22d). `EngineTraits` and the MySQL/MariaDB/SQL Server rows stay in the fork.
+- **W6. Ownership.** Upstream contributors generate the SQLite and PostgreSQL migrations with the one command; PostgreSQL already runs on every pull request. The fork maintainer generates the MySQL and SQL Server migrations at each upstream sync with the same command and resolves what the contents check reports (pr-plan S5). This is the model Bitwarden uses.
+- **W7. Contributor guide.** `src/Jellyfin.Database/readme.md` becomes an "Adding a database change" page: the command, W4, "review every generated migration", "never hand-port SQL blindly", and the hand edits a generated migration can need (data SQL, expression indexes, renames that EF scaffolds as drop plus add, type changes that need `USING`). The current page also names two different option spellings (`--provider` and `--migration-provider`), which the new page settles.
