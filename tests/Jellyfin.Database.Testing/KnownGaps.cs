@@ -1,5 +1,6 @@
 using System;
 using System.Linq;
+using Microsoft.Data.Sqlite;
 using Xunit.Sdk;
 
 namespace Jellyfin.Database.Testing;
@@ -21,6 +22,12 @@ public static class KnownGaps
         "PG-NUL-PARAMETER",
         "PostgreSQL rejects a NUL character in any string parameter",
         ex => PostgresErrors.HasSqlState(ex, "22021"));
+
+    public static readonly KnownGapDefinition ContainsOverManyValues = new(
+        TestDbProvider.Sqlite,
+        "SQLITE-CONTAINS-PARAMETER-LIMIT",
+        "SQLite gets a parameter for every value of a plain Contains, and takes at most 32,766",
+        ex => ex is SqliteException { SqliteErrorCode: 1 } sqlite && sqlite.Message.Contains("too many SQL variables", StringComparison.Ordinal));
 
     public static readonly KnownGapDefinition SortNameRangeLowersNonAsciiOnMySql = new(
         TestDbProvider.MySql,
