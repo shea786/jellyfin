@@ -1,12 +1,15 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.IO.Compression;
 using System.Linq;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using System.Threading;
 using System.Threading.Tasks;
 using Jellyfin.Database.Implementations;
 using Jellyfin.Database.Implementations.Entities;
+using Jellyfin.Database.Implementations.Enums;
 using Jellyfin.Database.Implementations.Locking;
 using Jellyfin.Database.Providers.Sqlite;
 using Jellyfin.Server.Implementations.FullSystemBackup;
@@ -120,6 +123,110 @@ public sealed class BackupServiceTests : IDisposable
         Assert.Equal(validItemId, singleRow.GetProperty("ItemId").GetGuid());
     }
 
+    [Fact]
+    public async Task RestoreBackupAsync_WithHomeSections_RestoresThem()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        await SeedHomeSectionsAsync(cancellationToken).ConfigureAwait(true);
+        var expected = await DisplayPreferencesRowsAsync(cancellationToken).ConfigureAwait(true);
+        var backupService = CreateBackupService();
+        var manifest = await backupService.CreateBackupAsync(new BackupOptionsDto()).ConfigureAwait(true);
+
+        // The sections change after the backup, so only the restore can bring them back.
+        await using (var ctx = CreateDbContext())
+        {
+            var sections = await ctx.Set<HomeSection>().OrderBy(e => e.Order).ToListAsync(cancellationToken).ConfigureAwait(true);
+            sections[0].Type = HomeSectionType.NextUp;
+            ctx.Set<HomeSection>().Remove(sections[1]);
+            await ctx.SaveChangesAsync(cancellationToken).ConfigureAwait(true);
+        }
+
+        await backupService.RestoreBackupAsync(manifest.Path).ConfigureAwait(true);
+
+        Assert.Equal(expected, await DisplayPreferencesRowsAsync(cancellationToken).ConfigureAwait(true));
+    }
+
+    [Fact]
+    public async Task RestoreBackupAsync_WithDamagedKey_LeavesDatabaseUntouched()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        await SeedHomeSectionsAsync(cancellationToken).ConfigureAwait(true);
+        var backupService = CreateBackupService();
+        var manifest = await backupService.CreateBackupAsync(new BackupOptionsDto()).ConfigureAwait(true);
+        await RewriteEntryAsync(
+            manifest.Path,
+            "Database/DisplayPreferences.json",
+            json =>
+            {
+                var rows = JsonNode.Parse(json)!.AsArray();
+                rows[0]!["Id"] = "not-a-number";
+                return rows.ToJsonString();
+            },
+            cancellationToken).ConfigureAwait(true);
+        var before = await DisplayPreferencesRowsAsync(cancellationToken).ConfigureAwait(true);
+
+        await Assert.ThrowsAnyAsync<JsonException>(() => backupService.RestoreBackupAsync(manifest.Path)).ConfigureAwait(true);
+
+        Assert.Equal(before, await DisplayPreferencesRowsAsync(cancellationToken).ConfigureAwait(true));
+    }
+
+    private static async Task RewriteEntryAsync(string archivePath, string entryName, Func<string, string> transform, CancellationToken cancellationToken)
+    {
+        using var archive = await ZipFile.OpenAsync(archivePath, ZipArchiveMode.Update, cancellationToken).ConfigureAwait(false);
+        var entry = archive.GetEntry(entryName)!;
+        string content;
+        var readStream = await entry.OpenAsync(cancellationToken).ConfigureAwait(false);
+        await using (readStream.ConfigureAwait(false))
+        using (var reader = new StreamReader(readStream))
+        {
+            content = await reader.ReadToEndAsync(cancellationToken).ConfigureAwait(false);
+        }
+
+        entry.Delete();
+        var replacement = archive.CreateEntry(entryName);
+        var writeStream = await replacement.OpenAsync(cancellationToken).ConfigureAwait(false);
+        await using (writeStream.ConfigureAwait(false))
+        using (var writer = new StreamWriter(writeStream))
+        {
+            await writer.WriteAsync(transform(content)).ConfigureAwait(false);
+        }
+    }
+
+    private async Task SeedHomeSectionsAsync(CancellationToken cancellationToken)
+    {
+        await using var ctx = CreateDbContext();
+        var user = new User("alice", "provider", "reset");
+        ctx.Users.Add(user);
+        await ctx.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+
+        // The removed row leaves a gap, so the sections only point at their preferences if the ids are restored.
+        var removed = new DisplayPreferences(user.Id, Guid.Empty, "removed");
+        var preferences = new DisplayPreferences(user.Id, Guid.Empty, "web");
+        preferences.HomeSections.Add(new HomeSection { Order = 0, Type = HomeSectionType.LatestMedia });
+        preferences.HomeSections.Add(new HomeSection { Order = 1, Type = HomeSectionType.Resume });
+        ctx.DisplayPreferences.AddRange(removed, preferences);
+        await ctx.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+        ctx.DisplayPreferences.Remove(removed);
+        await ctx.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task<List<string>> DisplayPreferencesRowsAsync(CancellationToken cancellationToken)
+    {
+        await using var ctx = CreateDbContext();
+        var rows = new List<string>();
+        foreach (var row in await ctx.DisplayPreferences.AsNoTracking().OrderBy(e => e.Id).ToListAsync(cancellationToken).ConfigureAwait(false))
+        {
+            rows.Add($"DisplayPreferences {row.Id} {row.UserId} {row.Client}");
+        }
+
+        foreach (var row in await ctx.Set<HomeSection>().AsNoTracking().OrderBy(e => e.Id).ToListAsync(cancellationToken).ConfigureAwait(false))
+        {
+            rows.Add($"HomeSection {row.Id} {row.DisplayPreferencesId} {row.Order} {row.Type}");
+        }
+
+        return rows;
+    }
+
     private BackupService CreateBackupService()
     {
         var factory = new Mock<IDbContextFactory<JellyfinDbContext>>();
@@ -133,13 +240,17 @@ public sealed class BackupServiceTests : IDisposable
         applicationPaths.Setup(a => a.BackupPath).Returns(_backupPath);
         applicationPaths.Setup(a => a.ConfigurationDirectoryPath).Returns(_configurationDirectoryPath);
         applicationPaths.Setup(a => a.DataPath).Returns(Path.Combine(_testRoot, "Data"));
+        applicationPaths.Setup(a => a.CachePath).Returns(Path.Combine(_testRoot, "Cache"));
+        applicationPaths.Setup(a => a.ProgramDataPath).Returns(Path.Combine(_testRoot, "ProgramData"));
         applicationPaths.Setup(a => a.RootFolderPath).Returns(Path.Combine(_testRoot, "Root"));
         applicationPaths.Setup(a => a.InternalMetadataPath).Returns(Path.Combine(_testRoot, "Metadata"));
         applicationPaths.Setup(a => a.DefaultInternalMetadataPath).Returns(Path.Combine(_testRoot, "MetadataDefault"));
 
         var jellyfinDatabaseProvider = new Mock<IJellyfinDatabaseProvider>();
         jellyfinDatabaseProvider.Setup(p => p.RunScheduledOptimisation(It.IsAny<CancellationToken>())).Returns(Task.CompletedTask);
-        jellyfinDatabaseProvider.Setup(p => p.PurgeDatabase(It.IsAny<JellyfinDbContext>(), It.IsAny<System.Collections.Generic.IEnumerable<string>>())).Returns(Task.CompletedTask);
+        jellyfinDatabaseProvider
+            .Setup(p => p.PurgeDatabase(It.IsAny<JellyfinDbContext>(), It.IsAny<IEnumerable<string>>()))
+            .Returns((JellyfinDbContext context, IEnumerable<string> tableNames) => new SqliteDatabaseProvider(null!, NullLogger<SqliteDatabaseProvider>.Instance).PurgeDatabase(context, tableNames));
 
         var applicationLifetime = new Mock<IHostApplicationLifetime>();
 

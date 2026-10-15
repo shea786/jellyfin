@@ -16,6 +16,7 @@ using MediaBrowser.Controller.Library;
 using MediaBrowser.Controller.SystemBackupService;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Metadata;
 using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -164,6 +165,33 @@ public class BackupService : IBackupService
                 var dbContext = await _dbProvider.CreateDbContextAsync().ConfigureAwait(false);
                 await using (dbContext.ConfigureAwait(false))
                 {
+                    dbContext.ChangeTracker.QueryTrackingBehavior = QueryTrackingBehavior.NoTracking;
+                    var entityTypes = typeof(JellyfinDbContext).GetProperties(System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance)
+                        .Where(e => e.PropertyType.IsAssignableTo(typeof(IQueryable)))
+                        .Select(e => (Type: e, Set: e.GetValue(dbContext) as IQueryable))
+                        .ToArray();
+
+                    // The keys are read once before anything is written, so an archive with a key that cannot be read
+                    // fails while the database is still intact.
+                    foreach (var entityType in entityTypes)
+                    {
+                        var zipEntry = zipArchive.GetEntry(NormalizePathSeparator(Path.Combine("Database", $"{entityType.Type.Name}.json")));
+                        if (zipEntry is null)
+                        {
+                            continue;
+                        }
+
+                        var keys = GetPrimaryKey(dbContext, entityType.Type);
+                        var zipEntryStream = await zipEntry.OpenAsync().ConfigureAwait(false);
+                        await using (zipEntryStream.ConfigureAwait(false))
+                        {
+                            await foreach (var item in JsonSerializer.DeserializeAsyncEnumerable<JsonObject>(zipEntryStream, _serializerSettings).ConfigureAwait(false))
+                            {
+                                ReadKeys(item, keys);
+                            }
+                        }
+                    }
+
                     // restore migration history manually
                     var historyEntry = zipArchive.GetEntry(NormalizePathSeparator(Path.Combine("Database", $"{nameof(HistoryRow)}.json")));
                     if (historyEntry is null)
@@ -195,12 +223,6 @@ public class BackupService : IBackupService
                         await dbContext.Database.ExecuteSqlRawAsync(insertScript).ConfigureAwait(false);
                     }
 
-                    dbContext.ChangeTracker.QueryTrackingBehavior = QueryTrackingBehavior.NoTracking;
-                    var entityTypes = typeof(JellyfinDbContext).GetProperties(System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance)
-                        .Where(e => e.PropertyType.IsAssignableTo(typeof(IQueryable)))
-                        .Select(e => (Type: e, Set: e.GetValue(dbContext) as IQueryable))
-                        .ToArray();
-
                     var tableNames = entityTypes.Select(f => dbContext.Model.FindEntityType(f.Type.PropertyType.GetGenericArguments()[0])!.GetSchemaQualifiedTableName()!);
                     _logger.LogInformation("Begin purging database");
                     await _jellyfinDatabaseProvider.PurgeDatabase(dbContext, tableNames).ConfigureAwait(false);
@@ -217,6 +239,7 @@ public class BackupService : IBackupService
                             continue;
                         }
 
+                        var keys = GetPrimaryKey(dbContext, entityType.Type);
                         var zipEntryStream = await zipEntry.OpenAsync().ConfigureAwait(false);
                         await using (zipEntryStream.ConfigureAwait(false))
                         {
@@ -233,6 +256,15 @@ public class BackupService : IBackupService
                                 try
                                 {
                                     records++;
+
+                                    // The serializer cannot set ids that have no public setter. They are set here, as other rows
+                                    // refer to them, such as the home sections to their display preferences.
+                                    var entry = dbContext.Entry(entity);
+                                    foreach (var (key, value) in ReadKeys(item, keys))
+                                    {
+                                        entry.Property(key.Name).CurrentValue = value;
+                                    }
+
                                     dbContext.Add(entity);
                                 }
                                 catch (Exception ex)
@@ -253,6 +285,25 @@ public class BackupService : IBackupService
 
             _logger.LogInformation("Restored Jellyfin system from {Date}", manifest.DateCreated);
         }
+    }
+
+    private static IReadOnlyList<IProperty> GetPrimaryKey(JellyfinDbContext dbContext, System.Reflection.PropertyInfo set)
+    {
+        return dbContext.Model.FindEntityType(set.PropertyType.GetGenericArguments()[0])!.FindPrimaryKey()?.Properties ?? [];
+    }
+
+    private static List<(IProperty Key, object? Value)> ReadKeys(JsonObject? item, IReadOnlyList<IProperty> keys)
+    {
+        var values = new List<(IProperty Key, object? Value)>(keys.Count);
+        foreach (var key in keys)
+        {
+            if (item?[key.Name] is { } value)
+            {
+                values.Add((key, value.Deserialize(key.ClrType)));
+            }
+        }
+
+        return values;
     }
 
     private bool TestBackupVersionCompatibility(Version backupEngineVersion)
