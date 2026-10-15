@@ -13,6 +13,7 @@ This file stays in the fork and never goes upstream. The user writes all PR titl
   - builds warning-free (`TreatWarningsAsErrors`);
   - passes the existing matrix;
   - leaves SQLite fully working.
+  - From step 27a on, every commit, not only the tip, is built in Debug: 0 errors, and a warning set no larger than the base's. This also applies to SQL Server work and to the final linear replay (B31).
 - **Portability steps (group 0 and group C0):**
   - contain only provider-neutral changes, plus SQLite tests that pin the behaviour and follow the rules in ADR-0002;
   - add no references to any server engine.
@@ -104,7 +105,7 @@ These steps reconcile with the parity task list P1-P7. P8 is a Postgres item and
 
 | # | Branch | Scope | Key files | Tests added | Depends on | SQLite migration |
 |---|---|---|---|---|---|---|
-| 27a | `multidb/27a-conformance-kit` | The fork half of the old step 27a (ADR-0001 W5), before any SQL Server work (ADR-0001 E2-E3): (a) MySQL and MariaDB rows in the conformance kit of 22d, plus a LIKE `[` row on every engine; it replaces the MySQL purge test class. The `ParentId` row is where the step 24 pre-clear (M5) is proved on MySQL and MariaDB. (b) A test-side `EngineTraits` table replacing the engine switches in `PoolChecks`, `ModelRows`, `BackupServiceTests` and `JellyfinApplicationFactory`. (c) Escape `[` in the shared `LikePatterns` (motivated by SQL Server only, so it stays out of the upstream series). | `tests/Jellyfin.Database.Testing/*`, `LikePatterns.cs` | The kit on SQLite, PostgreSQL, MySQL and MariaDB | 22d, 26 | no |
+| 27a | `multidb/27a-conformance-kit` | The fork half of the old step 27a (ADR-0001 W5), before any SQL Server work (ADR-0001 E2-E3): (a) MySQL and MariaDB rows in the conformance kit of 22d, plus a LIKE `[` row on every engine; it replaces the MySQL purge test class. The `ParentId` row is where the step 24 pre-clear (M5) is proved on MySQL and MariaDB. (b) A test-side `EngineTraits` table replacing the engine switches in `PoolChecks`, `ModelRows`, `BackupServiceTests` and `JellyfinApplicationFactory`. (c) Escape `[` in the shared `LikePatterns` (motivated by SQL Server only, so it stays out of the upstream series). | `tests/Jellyfin.Database.Testing/*`, `LikePatterns.cs` | The kit on SQLite, PostgreSQL, MySQL and MariaDB. **In progress (B31):** merged so far, the isolation fix (`399af59770`), binary collation (`a0bf39394e`), and the kit on MySQL and MariaDB with `EngineTraits` and the `[` escape (`a6cd869ce7`). Open: a deterministic FolderDelete row, the dedicated analyzer rule for the ban, and the other follow-ups in B31. The MySQL purge test classes are still present | 22d, 26 | no |
 | 27 | `multidb/27-sqlserver-provider` | `Jellyfin.Database.Providers.SqlServer` and its members (identity-insert scope, purge with `DELETE` + `RESEED`, retry codes, RCSI warning). Conventions: `binary(16)` Guid converter, BIN2 collation, `nvarchar(4000)` for text-class columns, OR filter dropped, `NoAction` on the 2 cascade FKs (ADR-0001 M5). Pool backend. **Not registered.** Written only after the SQL Server spike (ADR-0001 E3: the hazard checklist and the whole suite against a conventions-only stub) and after an ADR settles the text-class composite indexes over 1700 bytes (`Path`, `SortName`, `PresentationUniqueKey`). Entry criteria from step 20b (ADR-0005 R13): `LikeIgnoreAsciiCase` translated with an ASCII-only fold, so that `LikeIgnoreAsciiCaseBehaviourTests` and `BaseItemRepositorySortNameFilterTests` pass on this provider's pooled backends; a known-gap ledger entry, keyed to this provider, for `NameStartsWithOrGreater`/`NameLessThan` with a non-ASCII term. | New project, `Directory.Packages.props` (`Microsoft.EntityFrameworkCore.SqlServer` at the EF version, `Testcontainers.MsSql` 4.16.0) | Member tests; the suite with ADR-0006 G1/G2 and ADR-0009 G2 recorded; folder delete (M5); unique-NULL filter (M6) | 22, 27a | no |
 | 28 | `multidb/28-sqlserver-migrations-and-registration` | Baseline and registration of `Jellyfin-SqlServer` with the Experimental warning | Provider `Migrations/`, `ServiceCollectionExtensions.cs:24-27` | Migration tests (a)-(c); failing-migration test | 27 | no |
 | 29 | `multidb/29-ci-sqlserver` | Add the `SqlServer` matrix entry, not required (ADR-0010 CI3) | `.github/workflows/ci-tests.yml` | Sentinel | 28 | no |
@@ -330,8 +331,8 @@ The user changed the delivery strategy. This supersedes "small, stacked, indepen
   - **Gate follow-ups:**
     - the MySQL copy of `PairedMigrationsIdGenerator`, with its parity tests, was accepted until 22c. **Done in 22c (B27):** one shared internal generator in `Jellyfin.Database.Implementations.DesignTime`; the 22c merge `d59093e95c` moves MySQL to it and removes the copy, `MySqlPairedMigrationsIdGeneratorTests` and `ProviderSourceParityTests`;
     - in the replay, the version-detection commit becomes a fixup into step 24;
-    - 27a puts the history-in-fingerprint rule into the pool contract and moves the provider-to-assembly switch out of `ProviderRequirement.MigrationIds`;
-    - `OfflineContexts` leaves the PostgreSQL test namespace;
+    - 27a puts the history-in-fingerprint rule into the pool contract and moves the provider-to-assembly switch out of `ProviderRequirement.MigrationIds`. **Done in 27a (B31):** `1249673827` makes the pool fingerprint every pooled database's history, and `fa406640fb` moves the switch into `EngineTraits`;
+    - `OfflineContexts` leaves the PostgreSQL test namespace. **Done in 27a** (`c380ab7d19`, B31);
     - the first MySQL migration after the baseline needs an upgrade test from a baseline-only database;
     - document that the transactional wrapper tests service behaviour only;
     - step 26 adds MariaDB 11.8 as an advisory CI entry.
@@ -520,7 +521,7 @@ The user changed the delivery strategy. This supersedes "small, stacked, indepen
     4. ModelConformance compares the model with itself on SQLite, so it's meaningful only on PG.
     5. The two SQLite-only routines (MigrateActivityLogDb, StripEmbeddedLinkedChildren) have no guard against another engine.
     6. The CI sentinel check should be per project (step 26). **Done in step 26** (`f0f4aa5f44`, B30).
-    7. 27a: the sentinel doesn't tell MySQL from MariaDB. Fix it by comparing the server-reported flavour (MariaDB marker) with the selected provider, plus a negative control, using EngineTraits.
+    7. 27a: the sentinel doesn't tell MySQL from MariaDB. Fix it by comparing the server-reported flavour (MariaDB marker) with the selected provider, plus a negative control, using EngineTraits. **Done in 27a** (`ddd3d24b54`, B31).
     8. The commit body could name MySqlRestoreIdentityTests and MySqlPurgeDatabaseArgumentTests (optional, not done).
     9. 27a: check whether the kit duplicates those MySQL classes.
     10. H10: no fork ids in shipped text.
@@ -606,14 +607,89 @@ The user changed the delivery strategy. This supersedes "small, stacked, indepen
     - **Split checks.** The orchestrator checked the Compose examples and the coordinator the collation text. Several reviewers dropped on API connection errors, so the review was split.
     - **Fold rounds:** every-PR triggers, then the advisory switch to 9.7.2/12.3.3, then the collation wording, then the 1020 known issue.
   - **Findings for 27a.**
-    1. **Isolation, a confirmed bug.**
+    1. **Isolation, a confirmed bug.** **Fixed in 27a** (`d429d74b10`, ADR-0008 S5, B31).
        - MySqlConnector 2.6.2 (via Microting 10.0.12) maps `IsolationLevel.Unspecified` to REPEATABLE READ (`MySqlConnection.cs:195-205`), and sends `set session transaction isolation level repeatable read` before `start transaction` (`:239-250`).
        - So every `BeginTransaction()` without a level overrides `SessionSettingsInterceptor.cs:30`'s READ COMMITTED, for the transaction and the rest of the connection.
        - The runtime scratch check (`/tmp/26/isolation`) confirms it on 8.4.11, 9.7.2, 11.4.13, 11.8.9 and 12.3.3. With an explicit `ReadCommitted`, all five are fine.
        - This violates ADR-0008 R3 on both servers. It is 27a's first item, and 27a records the ADR-0008 correction.
-    2. **Error 1020** (`ER_CHECKREAD`) on MariaDB 11.8 and 12.3, where `innodb_snapshot_isolation` is on by default (11.4.13 = 0, 11.8.9 = 1, 12.3.3 = 1, verified). The classifier at `MySqlDatabaseProvider.cs:183` does not retry it.
-    3. **Collation.**
+    2. **Fixed in 27a:** no longer raised at READ COMMITTED, and retried as defence in depth (`04fde51282`, ADR-0008 S6, B31). **Error 1020** (`ER_CHECKREAD`) on MariaDB 11.8 and 12.3, where `innodb_snapshot_isolation` is on by default (11.4.13 = 0, 11.8.9 = 1, 12.3.3 = 1, verified). The classifier at `MySqlDatabaseProvider.cs:183` does not retry it.
+    3. **Collation.** **Fixed in 27a** (`f7edd3c017`, ADR-0006 C8, B31).
        - In the baseline, `KeyframeTicks` (`InitialCreate.cs:525`) is the only one of 102 text columns without `utf8mb4_0900_bin`. It is not indexed or keyed.
        - `AlterDatabase` at `:15` sets only the charset, so the database default is the server's insensitive collation. `__EFMigrationsHistory` inherits it, harmlessly.
        - Fix in 27a: the convention covers converted and primitive-collection columns, `AlterDatabase` sets the collation, the baseline is regenerated, and a test checks it.
   - **X10 CI** (relayed). Green at `939887782c`, including `ABI - Difference`, which is consistent with the additive `DbSet`. PostgreSQL is CI's only database job.
+
+## Amendments (step 27a so far, 2026-10-15)
+
+- **B31. Step 27a: isolation, collation, and the kit with `EngineTraits`, as merged so far.**
+  - Details, per-run commits and evidence paths are in [the 27a explainer](explainers/27a-mysql-family-hardening.md).
+  - The orchestrator fast-forwarded each part into `feature/multi-db`.
+  - The code commits record their own decisions: ADR-0008 S5 and S6, and ADR-0006 C8.
+  - **Isolation** (`d429d74b10`, `04fde51282`, `399af59770`, on `09cd63aca8`; evidence `/tmp/27a-iso`).
+    - **The fix.** `ReadCommittedConnection`, a subclass of Microting's `MySqlRelationalConnection` registered through `ReplaceService`, turns `Unspecified` into `ReadCommitted`. MySqlConnector 2.6.2, which Microting 10.0.12 depends on, mapped it to an explicit REPEATABLE READ. Error 1020 is now retryable.
+    - **Why not an interceptor.** A `DbTransactionInterceptor` was rejected:
+      - the event's level is read-only;
+      - the provider's interceptors run before the locking ones;
+      - `OptimisticLockBehavior` starts the transaction itself.
+
+      A design probe failed exactly the two Optimistic rows with "Transactions may not be nested".
+    - **Results.** `LibraryStructureControllerTests`, 10 runs per server: before, 7 of 10 failed on 12.3.3 and 5 of 10 on 11.8.9, all with 1020; after, 0 in 20. The red test fails 16 of 16 at the base.
+    - **Proof** at `e2d1f94cfc` (backup-c; same runtime code as the final commits): 10,896 passed, 657 skipped. Debug was compared at that tip only, 211/211.
+    - **Review and CI** (relayed). Review: APPROVE. CI at `399af59770`: green on every job, including the advisory MariaDB 12.3.3.
+  - **Collation** (`f7edd3c017`, `a0bf39394e`; evidence `/tmp/27a-coll`).
+    - **The commit.** `TextCollationConvention` selects text columns by store type and calls `UseCollation` per property.
+    - **The defaults.** The database and table defaults come from `HasCharSet`/`UseCollation(…, ApplyToAll)` in `MySqlDatabaseProvider.OnModelCreating` (`:171-172`). `BinaryCollationHistoryRepository` is swapped in at `:140`.
+    - **The baseline.** Regenerated against an empty snapshot; 102 of 102 text columns and 31 tables are now binary.
+    - **22c allowlist: 18 entries.** One reason changed, and the Down `AlterDatabase` was added.
+    - **No upgrade path.** Earlier fork-build databases are recreated, per ADR-0006 C8 (`:124`, `:140`), because the MySQL family is unreleased.
+    - **Results.** At the base, 14 of 22 rows fail; with the fix, 39 of 39 pass.
+    - **Where each run ran.** Proof, advisory, migration checks (48/48), red and green ran on the pre-fold pair `552c84018d` / `b990322cf1`. Only the per-commit fold gates and Debug (211/211, tip only) ran on the merged pair. The pairs differ only in a comment and the docs.
+    - **Proof.** 11,022 passed, 659 skipped.
+    - **Review and CI** (relayed). Review: APPROVE. CI at `a0bf39394e`: green on every job.
+  - **Kit and `EngineTraits`** (`c380ab7d19` → `fa406640fb` → `1249673827` → `ddd3d24b54` → `3790fe154e` → `919a1163bf` → `dd8c5d0d75` → `a6cd869ce7`; evidence `/tmp/27a-kit`).
+    - **What the chain adds:**
+      - helpers moved;
+      - `EngineTraits`, first with `Provider`, `ProviderType`, `CoversThroughSqliteMigration`, `IsEmbedded`, `AssertUniqueViolation` and `Pool`, then `ServerMarker`, `SupportsPartialIndexes` and `PurgeResetsIdentityInATransaction`;
+      - migration history in every pool's fingerprint, which deliberately changes the SQLite-file pool;
+      - the flavour sentinel;
+      - the kit on MySQL and MariaDB;
+      - the `[` escape, with 7 bracket cases;
+      - the purge contract: identity reset, except inside a transaction on MySQL and MariaDB;
+      - per-version collation tests.
+    - **Rulings and fixes.**
+      - The coordinator ruled `SupportsPartialIndexes` a capability trait, not a known gap: a narrow matcher, and 4 non-unique filtered indexes are full indexes on MySQL and MariaDB.
+      - The purge over-reset gap was found in review and fixed.
+      - CA1034 was caught by a Debug build at the then-tip `c951a1973f` and folded into `fa406640fb`.
+    - **Kit.** 64 `*ConformanceTests` rows per engine. SQLite: 62 passed, 2 skipped by its known gap. The other engines: 64/64.
+    - **Red controls.** Every row family was caught, but only across `red`, `red-fix` (corrected audit specs) and `red-fix2` (rerun of overwritten files), and FolderDelete only with repeats (below). Flavour controls 24/24. Both advisory legs passed.
+    - **Proof** at `a6cd869ce7`: 12,063 rows, 11,454 passed, 609 skipped, recounted by me and independently by the orchestrator.
+    - **Gates.** Per-commit gates 120/120: Release, format, render and 12 legs per commit. Debug was built for every kit commit, outside that table:
+      - six with recorded identities, 0 errors and a warning set equal to the base's: `c380ab7d19` (`debug-c1`), and `1249673827` to `dd8c5d0d75` (`dev/debug-each/results.tsv`);
+      - the tip in its own run (`debug`);
+      - `fa406640fb`, which has a Debug log without a recorded commit identity (`dev/d2-debug.log`).
+    - **Review** (relayed). APPROVE after two rounds.
+    - **Process slip.** One self-reported, harmless `git restore --source=HEAD` on the worker's own scratch file.
+  - **Gate-plan rule (from the coordinator).**
+    - **The rule.** Every commit's gate includes a Debug build, with 0 errors and a warning set no larger than the base's, not only at the tip.
+    - **Why.** The analyzers that fail the build run in Debug only, as the CA1034 slip showed, and CI's `dotnet test` builds Debug.
+    - **Scope.** It applies to the rest of 27a, to SQL Server, and to the final linear replay. It was not in force for the isolation and collation parts.
+  - **Closed by 27a:**
+    - B30 findings 1 to 3;
+    - B28 follow-up 7;
+    - B20's fingerprint, assembly-switch and `OfflineContexts` follow-ups.
+  - **Open: FolderDelete is being made deterministic.**
+    - **The problem.** The row catches a removed `ParentId` pre-clear only by chance. The first failure came on run 2 on MySQL and run 7 on MariaDB (`/tmp/27a-kit/red/folderdelete-summary.tsv`), and runs 1 to 6 passed on MariaDB with the break in place.
+    - **The work.** It is on `multidb/27a-folderdelete-deterministic` (`09c0b6d72e`). The row will be proven by a single-run break that fails 10 of 10 times on both servers.
+    - **Order.** It lands before the analyzer rule merges. Not fixed yet.
+  - **Other open 27a follow-ups:**
+    - the dedicated analyzer rule for the database ban, closing the hole the 20 file-wide `RS0030` disables leave (B28 follow-up 1);
+    - complex-type properties in `TextCollationConvention`;
+    - the views filter in `MySqlMigratedCollationTests`;
+    - the `OldAnnotation` charset;
+    - the null-tables check, which is server-only now;
+    - `[`, which is tested only through `LikeIgnoreAsciiCase`;
+    - the hand-built `%term%` at `TranslateQuery.cs:270` (pre-existing);
+    - PostgreSQL's transitive `CASCADE` against the purge contract (B28 F4);
+    - the nullable `tableNames` parameter;
+    - the inline server-version choice in `MySqlFamilyServer` and `MySqlTransactionIsolationTests`;
+    - the engine switches in `StartOverTests` and `AddNormalisedMatchColumnsMigrationTests`.
