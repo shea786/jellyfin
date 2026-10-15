@@ -54,13 +54,31 @@ mean something different or be impossible on another engine.
 | A new column, table or index | Run the command. Review both generated migrations and commit them with the change. |
 | A rename or a drop | EF scaffolds a drop plus an add, which loses the data. Edit the migrations by hand (`RenameColumn`, `RenameTable`, `RenameIndex`). |
 | A change of column type | Check the generated SQL. PostgreSQL often needs a `USING` clause for the conversion, which EF does not write. |
-| Data changes in SQL | Write them by hand in each provider, in the SQL of that provider. |
-| An expression index | EF cannot model it. Add it by hand with `migrationBuilder.Sql` in each provider, in the SQL of that provider. |
+| Data changes in SQL | Write them by hand in each provider, in the SQL of that provider. Where the text of the SQL differs between providers, record the difference in the allowlist described below. |
+| An expression index | EF cannot model it. Add it by hand with `migrationBuilder.Sql` in each provider, in the SQL of that provider. Where the text differs between providers, record the difference in the allowlist described below. |
 
 The `Model_HasNoPendingChanges` test fails when the model has changes that the
 migrations of a provider do not contain. Its message names the command to run.
 The test `MigrationsAfterTheBaseline_AreThoseOfTheReferenceProviderAfterWhatItCovers`
 fails when the providers do not have the same migration ids.
+
+The test `MigrationsThatShareAnId_HaveTheSameOperationsOrAnAllowlistEntry`
+compares the migrations of a change across the providers. For each operation in
+`Up` and `Down` it compares the kind, table and columns, whether a column is
+nullable, whether an index is unique, what a foreign key does on delete, and the
+text of SQL. It does not compare annotations, column types and lengths,
+defaults, collations, index filters, the SQL of check constraints, the names of
+new indexes and constraints, the values of data operations, or the order of the
+operations. It fails when a hand edit, such as SQL, is in one provider's
+migration only. Make the same change in every provider, in the SQL of that
+provider. Some differences are correct: SQL that does what the other providers'
+operations do, a step that only one engine needs, or a fix for data that only
+old SQLite databases can hold (on SQLite only). Add such a difference to
+`tests/Jellyfin.Server.Implementations.Tests/EfMigrations/MigrationContentsAllowlist.json`
+with its category and reason; the failure message prints the entry to fill in. A
+fix for a bug in current code is never listed there, because it has to reach
+every provider. When a migration with entries changes, the test reports the
+entries that no longer match.
 
 ## When a query behaves differently on one provider
 
