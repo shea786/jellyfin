@@ -117,7 +117,7 @@ Other facts from both runs:
 
   The review notes are not in the evidence directories, so these verdicts are attributed, not checked here.
 - **CI at `0f118c6b7c` (X7).** The orchestrator read the check runs with `gh`. It reports `format-check`, `run-tests` on Ubuntu, macOS and Windows, `run-tests-db` for PostgreSQL, the ABI jobs and CodeQL as successful. These results are relayed; no CI log is kept locally. CI's only database job is PostgreSQL, so the MySQL and MariaDB evidence is the local matrix.
-- **CI at `5d8b85e832` (X8).** Pending when this was written. The orchestrator read the check runs with `gh`: `format-check`, the ABI jobs and the artifact jobs had completed with success, while `run-tests` on Ubuntu, macOS and Windows, `run-tests-db` for PostgreSQL and Analyze (csharp) were still in progress. No CI result at this merge is claimed.
+- **CI at `5d8b85e832` (X8).** The orchestrator read the check runs read-only with `gh`: `format-check`, `run-tests` on `ubuntu-latest`, `macos-latest` and `windows-latest`, `run-tests-db` for PostgreSQL, all ABI jobs (BASE, HEAD, Difference, Common Ancestor, Generate Report, Base/Head Artifact) and CodeQL with Analyze (csharp) succeeded; the housekeeping jobs (Rename, Rebase, Release project board, main) were skipped. These results are relayed; no CI log is kept locally. As for X7, CI's only database job is PostgreSQL, so the MySQL and MariaDB evidence is the local matrix.
 
 ## Format workspace notice
 
@@ -130,4 +130,4 @@ That project is added as an analyzer `ProjectReference` in Debug only (`Director
 - **Bare-CR WebVTT.** This line ending is not supported (see above).
 - **Non-`WEBVTT` input.** It gets no map, by design.
 - **Upstream.** Nothing has been offered upstream. The B23 scan found no upstream follow-up for either bug on 2026-10-15.
-- **X9.** Closed on 2026-10-15 with no fix in this series. A runtime probe with real files and the real UTF.Unknown 2.7.0 on .NET 10.0.12 (`/tmp/x9-probe/`) did not reproduce it as a #18309 regression. Files detected as `iso-8859-16` or `iso-8859-10` were already garbled before #18309, because `StreamReader` falls back to UTF-8 instead of throwing. After it, srt to vtt output is byte-identical and srt to srt returns the raw bytes. The underlying defect, and #18309's misleading comment and unreached test, are upstream-note candidates (pr-plan B22, B26).
+- **X9.** Closed on 2026-10-15 with no fix in this series. A runtime probe with generated sample files and the real UTF.Unknown 2.7.0 on .NET 10.0.12 (`/tmp/x9-probe/`) did not reproduce it as a #18309 regression. Files detected as `iso-8859-16` or `iso-8859-10` were already garbled before #18309, because `StreamReader` falls back to UTF-8 instead of throwing. After it, srt to vtt output is byte-identical and srt to srt returns the raw bytes. The underlying defect, and #18309's misleading comment and unreached test, are upstream-note candidates (pr-plan B22, B26).
