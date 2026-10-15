@@ -2,7 +2,7 @@
 
 These are fork-internal study notes, not upstream PR text. They describe the local merges and the retained proof as of 2026-10-15.
 
-X7 and X8 came out of the subtitle triage after the upstream sync ([sync explainer](sync-upstream-20261015.md); pr-plan B22). Both bugs were already present at `61f9a9df23`, so neither is a regression from the sync. Both touch `Jellyfin.Api/Controllers/SubtitleController.cs` and its tests only. X9 is a separate question and is still open (see the end).
+X7 and X8 came out of the subtitle triage after the upstream sync ([sync explainer](sync-upstream-20261015.md); pr-plan B22). Both bugs were already present at `61f9a9df23`, so neither is a regression from the sync. Both touch `Jellyfin.Api/Controllers/SubtitleController.cs` and its tests only. X9 was a separate question; it is now closed without a fix (see the end).
 
 ## Commits and merges
 
@@ -130,4 +130,4 @@ That project is added as an analyzer `ProjectReference` in Debug only (`Director
 - **Bare-CR WebVTT.** This line ending is not supported (see above).
 - **Non-`WEBVTT` input.** It gets no map, by design.
 - **Upstream.** Nothing has been offered upstream. The B23 scan found no upstream follow-up for either bug on 2026-10-15.
-- **X9.** It is still unimplemented. It is fixed only if a runtime test with a real charset detector shows garbled output where the earlier code rejected the file (B22).
+- **X9.** Closed on 2026-10-15 with no fix in this series. A runtime probe with real files and the real UTF.Unknown 2.7.0 on .NET 10.0.12 (`/tmp/x9-probe/`) did not reproduce it as a #18309 regression. Files detected as `iso-8859-16` or `iso-8859-10` were already garbled before #18309, because `StreamReader` falls back to UTF-8 instead of throwing. After it, srt to vtt output is byte-identical and srt to srt returns the raw bytes. The underlying defect, and #18309's misleading comment and unreached test, are upstream-note candidates (pr-plan B22, B26).
