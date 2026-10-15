@@ -16,7 +16,7 @@ X7 and X8 came out of the subtitle triage after the upstream sync ([sync explain
 - **X8 history.** The final upstream-shaped commit `34dc00973a` is a message-only amend of `cd12b4dcdc`: both have tree `f1be4647ed`. The earlier versions are kept as backup branches, `fix/vtt-timestamp-map-header-only-v1` (`0e3275af52`) and `-v2` (`cd12b4dcdc`).
 - **Merge trees.** The X8 merge tree `cd096ce8f9` is identical to the candidate's tree. For X7, the merge differs from the candidate only in `docs/adr` files.
 
-These are local fork merges. Neither fix has been offered or merged upstream.
+X7's merge `0f118c6b7c` is on the fork's origin `feature/multi-db`, which is PR #1's head; the coordinator confirmed this read-only with `git ls-remote`. X8's merge `5d8b85e832` was made locally, and its push status is not recorded. The upstream-shaped branches are local and unpushed. Neither fix has been offered upstream.
 
 ## X7: `#EXTINF` durations under a comma-decimal culture
 
