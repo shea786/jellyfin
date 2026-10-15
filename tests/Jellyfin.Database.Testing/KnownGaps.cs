@@ -1,3 +1,6 @@
+using System;
+using Microsoft.Data.Sqlite;
+
 namespace Jellyfin.Database.Testing;
 
 /// <summary>
@@ -10,4 +13,9 @@ public static class KnownGaps
         TestDbProvider.Postgres,
         "PostgreSQL rejects a NUL character in any string parameter",
         ex => PostgresErrors.HasSqlState(ex, "22021"));
+
+    public static readonly KnownGapDefinition ContainsOverManyValues = new(
+        TestDbProvider.Sqlite,
+        "SQLITE-CONTAINS-PARAMETER-LIMIT: SQLite gets a parameter for every value of a plain Contains, and takes at most 32,766",
+        ex => ex is SqliteException { SqliteErrorCode: 1 } sqlite && sqlite.Message.Contains("too many SQL variables", StringComparison.Ordinal));
 }
