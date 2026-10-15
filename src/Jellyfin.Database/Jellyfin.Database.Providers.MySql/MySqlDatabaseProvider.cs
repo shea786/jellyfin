@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Data.Common;
 using System.Globalization;
@@ -22,7 +23,7 @@ namespace Jellyfin.Database.Providers.MySql;
 /// </summary>
 /// <remarks>
 /// One provider serves both servers. The server is named in the <c>server-version</c> option, for example
-/// <c>8.4-mysql</c> or <c>11.4-mariadb</c>, and is asked for its kind and version when the option is missing.
+/// <c>8.4-mysql</c> or <c>11.4.7-mariadb</c>, and is asked for its kind and version when the option is missing.
 /// </remarks>
 [JellyfinDatabaseProviderKey("Jellyfin-MySQL")]
 public sealed class MySqlDatabaseProvider : IJellyfinDatabaseProvider
@@ -41,6 +42,11 @@ public sealed class MySqlDatabaseProvider : IJellyfinDatabaseProvider
         + "or the database:ConnectionString configuration key (environment variable JELLYFIN_DATABASE__CONNECTIONSTRING).";
 
     private static readonly TimeSpan _maintenanceCommandTimeout = TimeSpan.FromHours(1);
+
+    // The server builds a provider for the migrations that run before it starts and another for the running server, and
+    // each of them is set up once. The warning is given once for each database in the process, so a start shows it once.
+    private static readonly ConcurrentDictionary<string, bool> _databasesWarnedOf = new(StringComparer.Ordinal);
+
     private readonly ILogger<MySqlDatabaseProvider> _logger;
 
     /// <summary>
@@ -81,6 +87,8 @@ public sealed class MySqlDatabaseProvider : IJellyfinDatabaseProvider
                 "The configured MySQL or MariaDB connection string is not valid. It is not shown, as it may contain a password. "
                 + ConnectionStringGuidance);
         }
+
+        WarnOnceThatTheProviderIsExperimental(connectionStringBuilder);
 
         var commandTimeout = GetOption<int?>(providerOptions, "command-timeout", e => int.Parse(e, CultureInfo.InvariantCulture));
         if (commandTimeout is not null)
@@ -306,6 +314,16 @@ public sealed class MySqlDatabaseProvider : IJellyfinDatabaseProvider
         return context.BaseItems.AnyAsync(e => !e.IsFolder && e.Type != "PLACEHOLDER", cancellationToken);
     }
 
+    private void WarnOnceThatTheProviderIsExperimental(MySqlConnectionStringBuilder builder)
+    {
+        // The password is not part of the key, as the key is kept for the life of the process.
+        var database = string.Create(CultureInfo.InvariantCulture, $"{builder.Server}:{builder.Port}/{builder.Database}");
+        if (_databasesWarnedOf.TryAdd(database, true))
+        {
+            _logger.LogWarning("The MySQL and MariaDB database provider is experimental. Back up the data before using it with a library you cannot rebuild.");
+        }
+    }
+
     private void RequireUtf8Mb4(MySqlConnectionStringBuilder builder)
     {
         // The collation of every text column, utf8mb4_0900_bin, is not valid on a connection in another character set.
@@ -336,7 +354,10 @@ public sealed class MySqlDatabaseProvider : IJellyfinDatabaseProvider
         {
             try
             {
-                using var connection = new MySqlConnection(connectionString);
+                // The database may not exist yet, so the version is asked of the server without selecting it. The connection is
+                // used once, so it is not pooled, which would keep it open for a pool that nothing else uses.
+                var builder = new MySqlConnectionStringBuilder(connectionString) { Database = string.Empty, Pooling = false };
+                using var connection = new MySqlConnection(builder.ConnectionString);
                 connection.Open();
                 server = ReadDetected(connection.ServerVersion);
             }
