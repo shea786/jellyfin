@@ -120,3 +120,36 @@
 ## Amendments (step 24 gate, 2026-10-14)
 
 - **C7. C2 is superseded for MySQL as well as MariaDB.** Both use `utf8mb4_0900_bin` (C4), set per column by the provider convention, and the connection character set is forced to `utf8mb4` (ADR-0011 F6), which that collation needs.
+
+## Amendments (step 27a, 2026-10-15)
+
+- **C8. On MySQL and MariaDB, every column stored as text is binary, chosen by its type in the database, and so is the default of the database and of every table.** This completes C4 and C7.
+  - **What was wrong.**
+    - The convention selected string properties by their .NET type (`Properties<string>().UseCollation`). `KeyframeData.KeyframeTicks`, an `ICollection<long>` stored as a JSON array in `longtext`, had no collation.
+    - A column that names its character set and no collation gets the default collation of that character set, not the table's or the database's. Microting names the character set of every text column, so `KeyframeTicks` was `utf8mb4_0900_ai_ci` on MySQL and `utf8mb4_uca1400_ai_ci` on MariaDB.
+    - The baseline's `AlterDatabase` ran `ALTER DATABASE CHARACTER SET utf8mb4`, which resets even a database created with `utf8mb4_0900_bin` to the server's default.
+    - Microting's history repository names only the character set of `__EFMigrationsHistory`, so that table was case-insensitive in every database.
+    - Probed in local runs on MySQL 8.4.11 and 9.7.2 and MariaDB 11.4.13 and 12.3.3 (`/tmp/27a-coll/probe-results.txt`). None of it changed a comparison Jellyfin makes, as `KeyframeTicks` is read back whole and `MigrationId` is compared as an exact ASCII id.
+  - **The rule now.**
+    - A model-finalizing convention (`TextCollationConvention`) gives `utf8mb4_0900_bin` to every property whose type in the database is `char`, `varchar` or one of the text types. It takes the type from the model, or from the provider's type mapping, after the conventions that change column types. So primitive collections, value-converted strings and JSON stored in text are covered.
+    - A `json` store type is left out. In a local probe on MySQL 8.4.11 and MariaDB 11.4.13 (`/tmp/27a-coll/probe-json-results.txt`): on MySQL it has the binary character set and rejects a collation (error 1253); on MariaDB it is `longtext` with `utf8mb4_bin`. The model has none; one would need its own decision, and the real-server test would flag it on MariaDB.
+    - The model names `utf8mb4` and `utf8mb4_0900_bin`, delegated to the database, the tables and the columns. So the baseline runs `ALTER DATABASE COLLATE utf8mb4_0900_bin`, every `CREATE TABLE` ends with `COLLATE=utf8mb4_0900_bin`, and a database that the provider creates itself gets both, as Microting's `CREATE DATABASE` takes them from the model.
+    - The provider replaces the history repository with `BinaryCollationHistoryRepository`, which gives the history table and its columns the collation, as EF Core creates that table before the first migration runs.
+  - **The baseline is regenerated, not followed by a new migration.**
+    - The MySQL family is Experimental and fork-only (ADR-0011) and has never been released: no tag contains the baseline commit `d2fba4eee4`. ADR-0003 already allows a baseline to be regenerated until the first release that contains it.
+    - A database migrated with the old baseline keeps its history row for the same id. EF Core does not run the baseline again, and the database keeps the old, harmless collations. No data-preserving upgrade path is owed. The fork branch is an unreleased development branch, so MySQL and MariaDB databases from earlier builds are recreated, not upgraded, as the setup pages say; no migration and no warning is added for them.
+    - The regenerated baseline differs only in the collation of the database, of the 31 tables and of `KeyframeTicks`, and in a Down operation that resets the database default.
+  - **Generated against an empty snapshot.** With no snapshot, EF Core 10.0.12 builds the first migration through `MigrationsModelDiffer.Add`, whose `DiffAnnotations(null, target)` never sets the collation of `AlterDatabase`. With an empty snapshot it uses `Diff(source, target)`, which does. `src/Jellyfin.Database/readme.md` gives the procedure, and an offline test fails if the first operation loses the collation.
+  - **Contents check (22c).** Of the 10 baseline entries, only the reason of the MySQL `AlterDatabase` (Up) changed, to name the collation. One entry was added: the MySQL `AlterDatabase` in Down, `EngineSpecific`. The other nine are unchanged, because collations and annotations are not compared (`MigrationContents.cs:22-23`), and the regenerated baseline adds no other operation.
+  - **Tests.**
+    - **Offline.** Every property stored as text has the collation, on the provider-table rows MySQL 8.4 and 9.7 and MariaDB 11.4.7, 11.8 and 12.3. Every property stored as a string has a text type. The convention chooses by the type in the database, on a probe model with converted, collection and `json` columns. The baseline's first operation sets the collation. The baseline script gives the database, every table, the history table and every text column the collation.
+    - **On MySQL and MariaDB.** A new database is migrated three ways: one the provider creates, one created with the server's defaults, and one created with the binary collation. `information_schema` must then report `utf8mb4_0900_bin` for the database, every table and every text column, the history table included. The text columns must be exactly those the model stores as text, plus the history table's two.
+    - **At the base** `399af59770`, with only the two test files added, exactly 14 rows fail on each server, in local runs on MySQL 8.4.11 and MariaDB 11.4.13 (`/tmp/27a-coll/red`):
+      - the five text-column rows, on `KeyframeTicks`;
+      - the model default, the baseline's first operation, the two baseline-script rows and the history table;
+      - the probe model;
+      - the three real-server rows.
+    - The guard that every property stored as a string has a text type passes there, as it should. The `IsText` unit test of the new convention cannot compile there.
+  - **Also found at the base.**
+    - Every table, not only the history table, defaulted to the server's case-insensitive collation, because the baseline named only the character set of each table. A column added later without a collation would have taken it.
+    - Choosing by .NET type also gave the collation to a string property stored as `json`. MySQL rejects that when it creates the table. The probe model shows both.
