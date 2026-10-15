@@ -5,7 +5,7 @@ using System.Threading;
 using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.Extensions.Logging;
 
-namespace Jellyfin.Database.Providers.MySql.Migrations;
+namespace Jellyfin.Database.Implementations.DesignTime;
 
 /// <summary>
 /// Generates the id of a new migration.
@@ -16,8 +16,8 @@ namespace Jellyfin.Database.Providers.MySql.Migrations;
 /// A name that simply has no migration in the reference directory is not reported.
 /// </summary>
 /// <remarks>
-/// This mirrors the generator of the PostgreSQL provider. It is a copy and not a shared file, because both provider assemblies
-/// make their internals visible to the same test project, where a shared type would exist twice.
+/// Every provider that mirrors the migrations of the SQLite provider registers this one generator through
+/// <see cref="PairedMigrationsDesignTimeServices"/>, so the providers cannot drift apart in how they pair their ids.
 /// </remarks>
 internal sealed class PairedMigrationsIdGenerator : IMigrationsIdGenerator
 {

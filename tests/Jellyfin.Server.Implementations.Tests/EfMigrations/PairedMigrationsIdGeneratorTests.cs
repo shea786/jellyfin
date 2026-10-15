@@ -2,14 +2,13 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Text.RegularExpressions;
-using Jellyfin.Database.Providers.MySql.Migrations;
+using Jellyfin.Database.Implementations.DesignTime;
 using Microsoft.Extensions.Logging;
 using Xunit;
-using PostgresIdGenerator = Jellyfin.Database.Providers.Postgres.Migrations.PairedMigrationsIdGenerator;
 
-namespace Jellyfin.Server.Implementations.Tests.MySql;
+namespace Jellyfin.Server.Implementations.Tests.EfMigrations;
 
-public sealed partial class MySqlPairedMigrationsIdGeneratorTests : IDisposable
+public sealed partial class PairedMigrationsIdGeneratorTests : IDisposable
 {
     private readonly string _directory = Directory.CreateTempSubdirectory("paired-migration-ids").FullName;
     private readonly RecordingLogger _logger = new();
@@ -136,61 +135,6 @@ public sealed partial class MySqlPairedMigrationsIdGeneratorTests : IDisposable
         Assert.Equal("AddThing", generator.GetName(id));
         Assert.False(generator.IsValidId("AddThing"));
         Assert.False(generator.IsValidId("2026100109000_AddThing"));
-    }
-
-    public static TheoryData<string[], string?, string> SharedCases() => new()
-    {
-        { ["20261001090000_AddThing", "20261002090000_AddOtherThing"], null, "AddThing" },
-        { ["20261001090000_AddOtherThing"], null, "AddThing" },
-        { ["20261001090000_Add_Thing"], null, "Thing" },
-        { ["20261001090000_addthing"], null, "AddThing" },
-        { ["20261001090000_AddThing", "20261002090000_AddThing"], null, "AddThing" },
-        { [], "missing", "AddThing" },
-        { [], null, "AddThing" }
-    };
-
-    [Theory]
-    [MemberData(nameof(SharedCases))]
-    public void GenerateId_ReturnsTheSameAsTheGeneratorOfPostgres(string[] migrations, string? subdirectory, string name)
-    {
-        foreach (var migration in migrations)
-        {
-            CreateMigration(migration);
-        }
-
-        var directory = subdirectory is null ? _directory : Path.Combine(_directory, subdirectory);
-        var postgresLogger = new RecordingLogger();
-        var mySqlLogger = new RecordingLogger();
-
-        var postgresId = new PostgresIdGenerator(subdirectory is null && migrations.Length == 0 ? null : directory, postgresLogger).GenerateId(name);
-        var mySqlId = new PairedMigrationsIdGenerator(subdirectory is null && migrations.Length == 0 ? null : directory, mySqlLogger).GenerateId(name);
-
-        // A new id carries the time of the call, so only the part that does not depend on the time is compared.
-        Assert.Equal(WithoutFreshTimestamp(postgresId, migrations), WithoutFreshTimestamp(mySqlId, migrations));
-        Assert.Equal(postgresLogger.Warnings, mySqlLogger.Warnings);
-    }
-
-    [Theory]
-    [InlineData("20261001090000_AddThing")]
-    [InlineData("AddThing")]
-    [InlineData("2026100109000_AddThing")]
-    [InlineData("20261001090000_")]
-    [InlineData("2026100109000X_AddThing")]
-    public void IsValidId_AgreesWithTheGeneratorOfPostgres(string id)
-    {
-        var postgres = new PostgresIdGenerator(null, _logger);
-        var mySql = new PairedMigrationsIdGenerator(null, _logger);
-
-        Assert.Equal(postgres.IsValidId(id), mySql.IsValidId(id));
-        if (mySql.IsValidId(id))
-        {
-            Assert.Equal(postgres.GetName(id), mySql.GetName(id));
-        }
-    }
-
-    private static string WithoutFreshTimestamp(string id, string[] migrations)
-    {
-        return Array.IndexOf(migrations, id) >= 0 ? id : "<fresh>" + id[14..];
     }
 
     public void Dispose()
