@@ -11,7 +11,7 @@ These are fork-internal study notes, not upstream PR text. They describe the bra
   - The orchestrator fast-forwarded `feature/multi-db` to `5597fca7cc`.
   - The 22c code tip `5597fca7cc` is on origin `feature/multi-db`, pushed by the coordinator. The orchestrator checked this read-only with `git ls-remote` on 2026-10-15; it is relayed, not checked here.
   - The docs commit `ed644cf583`, and the follow-up that corrects this line, go up with the next code merge.
-  - No CI result at `5597fca7cc` is known, and none is claimed.
+  - CI at `5597fca7cc`, relayed from the orchestrator's read-only `gh` read of the check runs, all succeeded: `format-check`, `run-tests` on Ubuntu, macOS and Windows, `run-tests-db` for PostgreSQL, all ABI jobs (`ABI - Difference` confirms that the internal `DesignTime` types change no checked API) and CodeQL with Analyze (csharp); the housekeeping jobs were skipped. No CI log is kept locally. CI's only database job is PostgreSQL, so the MySQL and MariaDB evidence is the local matrix.
 - **Backups, kept:**
 
   | Branch | Backup | SHA |
@@ -237,5 +237,5 @@ Relayed by the coordinator; the review notes are not in the evidence:
 
 - **What the check ignores.** Types, defaults, collations, filters, check SQL, new names, data values and order are not compared (see the list above).
 - **SQL is compared as text.** Equivalent SQL with different text needs an entry, and the check does not prove equivalence.
-- **CI.** No CI result at `5597fca7cc` is known, and none is claimed.
+- **CI.** It was green at `5597fca7cc`, as relayed (see the state above). PostgreSQL is CI's only database job.
 - **The format gate on branch A** is "equal to base" until the replay folds `62282ffd55` in.

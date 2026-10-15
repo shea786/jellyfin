@@ -88,7 +88,7 @@ These steps reconcile with the parity task list P1-P7. P8 is a Postgres item and
 | 22 | `multidb/22-harness-leased-pool` | The generic leased-pool strategy: purge plus seed data, and `fresh: true` (ADR-0002 H1-H2) | `tests/Jellyfin.Database.Testing/*` | Pool self-tests on SQLite file databases | 21 | no |
 | 22b | `multidb/22b-migration-workflow` | Contributor workflow for schema changes (ADR-0001 W1-W3). (a) A design-time `IMigrationsIdGenerator` on the PostgreSQL provider that reuses the id of the SQLite migration with the same name, found by file name in the SQLite provider's `Migrations/` (no assembly reference, ADR-0011), implementing the public interface (not the internal `MigrationsIdGenerator`: EF1001), registered with `[assembly: DesignTimeServicesReference]` so a different startup project still finds it. (b) One offline command that generates the SQLite migration first and then every other provider's. (c) One test theory over a provider table for pending model changes and id pairing, replacing the PostgreSQL-only class; every failure message names the command. (d) `src/Jellyfin.Database/readme.md` replaced by an "Adding a database change" page (the escape-hatch order of W4; review every generated migration; never hand-port SQL blindly). About 400 lines. | PostgreSQL provider `Migrations/`, the command, `PostgresMigrationBaselineTests.cs` (generalised), `src/Jellyfin.Database/readme.md` | The theory on SQLite and PostgreSQL; a generator test (same name reuses the SQLite id; a name with no SQLite migration gets a fresh id); the command run once in a throwaway checkout | 22 (cut from the pre-step-24 tip so it replays before group C) | no |
 | 22c | `multidb/22c-migration-contents-check` | Cross-engine check of migration contents (ADR-0001 W2). For every paired id, compare the operations of `Up` and `Down` by kind, table and column, ignoring annotations. A `Sql` operation present on one engine only needs an allowlist entry with a reason, ledger-style. A fix for legacy SQLite data may stay SQLite-only; a fix for a bug in current code may not. | The test project of 22b, an allowlist file | The check on every paired migration so far, with an allowlist entry for each existing one-sided `Sql`. **Done 2026-10-15:** branch tip `70082dda51`, merged as `d59093e95c`, then `5597fca7cc`; see B27 | 22b | no |
-| 22d | `multidb/22d-raw-sql-ban-and-kit` | The upstream half of the old step 27a (ADR-0001 W5): (a) banned APIs `IsSqlite`/`IsNpgsql`/`IsMySql`/`IsSqlServer`, and `ExecuteSqlRaw*`/`FromSql*`/`SqlQuery*` outside provider projects, each existing site suppressed with its reason; (b) the cross-engine conformance kit run on SQLite and PostgreSQL, replacing their per-provider purge test classes. Its rows: purge, fresh and identity; explicit identity insert and restore round trip; an induced write conflict through the classifier; a `ParentId` chain deeper than 15 and a folder delete; `MinValue`/`MaxValue` under a non-UTC `TZ`; LIKE `%`, `_` and non-ASCII; lists of 3,000 and 100,000 ids; a long composite key; model conformance. | `BannedSymbols.txt`, `tests/BannedSymbols.Tests.txt`, `tests/Jellyfin.Database.Testing/*` | The kit on SQLite and PostgreSQL | 22c | no |
+| 22d | `multidb/22d-raw-sql-ban-and-kit` | The upstream half of the old step 27a (ADR-0001 W5): (a) banned APIs `IsSqlite`/`IsNpgsql`/`IsMySql`/`IsSqlServer`, and `ExecuteSqlRaw*`/`FromSql*`/`SqlQuery*` outside provider projects, each existing site suppressed with its reason; (b) the cross-engine conformance kit run on SQLite and PostgreSQL, replacing their per-provider purge test classes. Its rows: purge, fresh and identity; explicit identity insert and restore round trip; an induced write conflict through the classifier; a `ParentId` chain deeper than 15 and a folder delete; `MinValue`/`MaxValue` under a non-UTC `TZ`; LIKE `%`, `_` and non-ASCII; lists of 3,000 and 100,000 ids; a long composite key; model conformance. | `BannedSymbols.txt`, `tests/BannedSymbols.Tests.txt`, `tests/Jellyfin.Database.Testing/*` | The kit on SQLite and PostgreSQL. **Done 2026-10-15:** branch tip `580005950e`, merged as `2b3bcd0649`, see B28. As built, the ban is in `BannedSymbols.Database.txt`, applied by `Directory.Build.props` to production projects only (not the providers or `tests/`), and it also bans `GetDbConnection`, `ProviderName` and `ActiveProvider`. The MySQL purge test class stays until 27a | 22c | no |
 
 ## Group C: MySQL/MariaDB (Experimental, fork-only until ADR-0011 R1 is met; one provider, two matrix entries)
 
@@ -335,7 +335,7 @@ The user changed the delivery strategy. This supersedes "small, stacked, indepen
     - document that the transactional wrapper tests service behaviour only;
     - step 26 adds MariaDB 11.8 as an advisory CI entry.
   - Details: `explainers/25-mysql-migrations-and-registration.md`.
-- **B21. New 22d item (upstream half): a sentinel in Server.Tests.**
+- **B21. New 22d item (upstream half): a sentinel in Server.Tests.** **Done in 22d (`580005950e`, B28):** Server.Tests provenance is now proven by its own sentinel on every engine, not by its companion runs.
   - **The fact.** `ProviderBackend_IsLive` in `tests/Jellyfin.Server.Tests`, through `BackendLiveness.Verify`, printing the actual backend and server version. Every provider run of Server.Tests then proves its own backend.
   - **Negative control.** A run with the wrong `JELLYFIN_TEST_EXPECTED_PROVIDER` must fail.
   - **Scope.** Step 25's approved commits and the frozen harness stay unchanged.
@@ -395,7 +395,7 @@ The user changed the delivery strategy. This supersedes "small, stacked, indepen
       - `ac04957b95` adds the check;
       - `70082dda51` updates the readme.
     - **Fork.** The merge is `d59093e95c` (parents `693da13de8`, `70082dda51`), and `5597fca7cc` compares one row per migrations assembly, with MySQL and MariaDB collapsed as "MySQL 8.4".
-    - **State.** The orchestrator fast-forwarded `feature/multi-db` to `5597fca7cc`. That code tip is on origin `feature/multi-db`, pushed by the coordinator; the orchestrator checked this read-only with `git ls-remote` on 2026-10-15 (relayed). The docs commit `ed644cf583` and its follow-up go up with the next code merge. No CI result at `5597fca7cc` is known, and none is claimed.
+    - **State.** The orchestrator fast-forwarded `feature/multi-db` to `5597fca7cc`. That code tip is on origin `feature/multi-db`, pushed by the coordinator; the orchestrator checked this read-only with `git ls-remote` on 2026-10-15 (relayed). The docs commit `ed644cf583` and its follow-up go up with the next code merge. CI at `5597fca7cc` was later green, as relayed (see CI below).
     - **Backups, kept.** A: `-backup-a` `788a28775a`, `-backup-b` `d1ff0939dd`. Fork `multidb/22c-merge-candidate`: `-backup-a` `ed39922868`, `-backup-b` `7452d0826e`, `-backup-c` `1f61eb54d9`.
   - **The merge resolves the group C conflicts, as B17 allows.**
     - MySQL moves to the shared generator. The copy, `MySqlPairedMigrationsIdGeneratorTests` and `ProviderSourceParityTests` go, which settles B20's first gate follow-up.
@@ -450,4 +450,71 @@ The user changed the delivery strategy. This supersedes "small, stacked, indepen
       - Fork run 1, with a bug in the script's search string, is kept in `fork-run1-needle-bug/` and noted.
     - **Parity** (`/tmp/22c/parity/fork/`): `dev/add-migration` gave the same id on SQLite, PostgreSQL and MySQL. A name with no SQLite twin got fresh ids on PostgreSQL and MySQL.
     - **Per-commit gates:** `/tmp/22c/chain3/gates/results.tsv`.
-  - **CI.** No CI result at `5597fca7cc` is known, and none is claimed.
+  - **CI.** CI at `5597fca7cc`, relayed from the orchestrator's read-only `gh` read of the check runs, all succeeded: `format-check`, `run-tests` on Ubuntu, macOS and Windows, `run-tests-db` for PostgreSQL, all ABI jobs (`ABI - Difference` confirms that the internal `DesignTime` types change no checked API) and CodeQL with Analyze (csharp); the housekeeping jobs were skipped. No CI log is kept locally. CI's only database job is PostgreSQL, so the MySQL and MariaDB evidence is the local matrix.
+
+## Amendments (step 22d, 2026-10-15)
+
+- **B28. Step 22d, the raw SQL ban and the conformance kit, as built.** Details and evidence paths are in [the 22d explainer](explainers/22d-raw-sql-ban-and-kit.md).
+  - **Branches.**
+    - **Upstream-shaped.** `multidb/22d-raw-sql-ban-and-kit` on `70082dda51`:
+      - `98dcacbfc6`, the ban;
+      - `cddbb29d77`, which moves `TemporaryTimeZone`;
+      - `6ba81682b7`, the kit;
+      - `d6b1d8169b`, which replaces the purge tests;
+      - `580005950e`, the Server sentinel.
+    - **Backups:** `-backup-a` `131c6caf67`, `-b` `924f969d87`, `-c` `df6c59aaa1`, `-d` `5ca59314c4`.
+    - **Fork merge.** `2b3bcd0649` (parents `1847099b6c`, `580005950e`, tree `9a09b376f6`). The orchestrator fast-forwarded `feature/multi-db` to it. It is not pushed yet; the coordinator pushes it (relayed).
+  - **Ban.**
+    - `BannedSymbols.Database.txt` has 25 ids, verified against the package XML (`/tmp/22d/ban-ids/`).
+    - It is applied by path: to every project except those under `tests/` and `Jellyfin.Database.Providers.*`. There is no opt-out property, because MSBuild imports environment variables as properties.
+    - `DatabaseBannedSymbolsTests` resolves the ids by reflection; pinned exemptions apply only on `FileNotFoundException`.
+    - **Suppressions.** 7 production suppressions, each scoped. On the fork, `MigrateLibraryDb` has a scoped pragma at `:85-91`, and its file-wide disable is removed. 4 unused file-wide disables were removed.
+    - **Still hidden.** 20 file-wide `RS0030` disables still hide the ban. This is follow-up 1, for 27a, because analyzer 5.6.0 has only `RS0030`.
+  - **Scope decision.** The first version needed 109 suppressions, 102 of them in tests (relayed). The coordinator narrowed the ban to production code, because tests may be engine-specific by design.
+  - **Kit.**
+    - 55 cases: Purge 6, Restore 2, WriteConflict 4, FolderDelete 2, DateTimeLimits 12, Like 18, IdList 8, CompositeKey 1, Model 2. The brief said Purge 5; the TRX files show 6, which makes 55.
+    - SQLite: 53 passed, 2 skipped by `SQLITE-CONTAINS-PARAMETER-LIMIT`. PostgreSQL: 55 passed. MySQL and MariaDB: all skipped until 27a, 23 skipped results each.
+    - The restore row has self-expiring exceptions for `HomeSection` and the concurrency tokens. No fork ids appear in shipped text (H10).
+  - **B21 done.**
+    - The Server.Tests `ProviderBackend_IsLive` runs on every engine. Server.Tests provenance is now independently proven, not companion-based.
+    - Negative controls: a wrong expected provider fails on A and on the fork, including MySQL against MariaDB in both directions.
+  - **Review.** Relayed; `/tmp/22d/review/` keeps the range-diffs, not the notes.
+    - The kit and the other commits passed review first time.
+    - **Ban S1, a real bug.** The SQL Server `MigrationBuilder` id named the wrong namespace and matched nothing.
+    - **Other ban changes.**
+      - The environment-variable opt-out was replaced by the path rule.
+      - The pinned exemption was narrowed to `FileNotFoundException`.
+      - `GetDbConnection`, `ProviderName` and `ActiveProvider` are now banned.
+    - The A evidence was rerun.
+    - **Final:** APPROVE at `580005950e` and APPROVE at `2b3bcd0649`.
+    - **Process slip.** One `git add -A -- tests/` was used; nothing unintended was committed.
+  - **Proofs.** Passed/skipped (Implementations; Server.Tests; Integration):
+    - **A `580005950e`:**
+      - SQLite **2118/88; 145/8; 137/11**;
+      - PostgreSQL **2152/50; 140/13; 144/6**.
+
+      5,012 TRX rows (4,836 passed, 176 skipped). Format equal to base.
+    - **Fork `2b3bcd0649`:**
+      - SQLite **2461/112; 157/9; 137/11**;
+      - PostgreSQL 16.15 **2495/74; 147/18; 144/6**;
+      - MySQL 8.4.11 and MariaDB 11.4.13 each **2370/157; 127/38; 144/6**.
+
+      11,455 rows (10,823 Passed, 632 NotExecuted), recounted by me and independently by the orchestrator.
+    - **Both:** all three sentinels pass. Debug 211/211 on both shapes, empty diff. Per-commit gates are in `/tmp/22d/chain-{A,fork}`.
+  - **Negative controls** (`/tmp/22d/negative/`):
+    - **Server sentinel.** A wrong expected provider fails.
+    - **Kit.** The broken purge and restore rows fail.
+    - **Ban file.** A wrong MySQL id fails.
+    - **Ban injection.** It fires in production even with the environment variable set, and is silent in tests and providers. `ItemPersistenceService` is not reported (follow-up 1).
+    - **Masked run.** Purge-mutation run 1 was masked on PostgreSQL; that is F4.
+  - **Findings.**
+    - **F1 = X10.** `HomeSection` is lost on restore on every engine. A fix task is starting separately.
+    - **F2.** Concurrency tokens are restored as 0. Upstream-note candidate; no concrete harm.
+    - **F3.** A plain `Contains` with 100k ids fails on SQLite. Upstream-note candidates, at `580005950e`: `LinkedChildrenService.cs:93`, `BaseItemRepository.TranslateQuery.cs:319`, and `ItemPersistenceService.cs:403`, `457`, `531` and `601`.
+    - **F4.** A partial purge differs. PostgreSQL uses `TRUNCATE ... CASCADE`; SQLite turns foreign keys off and leaves orphans. Every current caller purges all tables. Contract note or 27a kit row.
+  - **Follow-ups named here** (the report numbers 1 to 10; I list only those relayed to me):
+    - 1, the 20 file-wide disables;
+    - 27a: sentinel MySQL vs MariaDB flavour, kit duplication check, MySQL and MariaDB kit rows;
+    - step 26: per-project CI sentinel check.
+  - **22c CI.** Green at `5597fca7cc`, as relayed (B27).
+  - **CI at `2b3bcd0649`.** No result is known, and none is claimed.
