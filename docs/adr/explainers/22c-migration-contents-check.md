@@ -9,7 +9,8 @@ These are fork-internal study notes, not upstream PR text. They describe the bra
 - **Fork:** the merge `d59093e95c` (parents `693da13de8` and `70082dda51`) and one commit on top, `5597fca7cc` "Compare the MySQL and MariaDB migrations once in the contents check".
 - **State:**
   - The orchestrator fast-forwarded `feature/multi-db` to `5597fca7cc`.
-  - It is not pushed; the coordinator pushes docs-only and code commits together with the next code merge. This is relayed.
+  - The 22c code tip `5597fca7cc` is on origin `feature/multi-db`, pushed by the coordinator. The orchestrator checked this read-only with `git ls-remote` on 2026-10-15; it is relayed, not checked here.
+  - The docs commit `ed644cf583`, and the follow-up that corrects this line, go up with the next code merge.
   - No CI result at `5597fca7cc` is known, and none is claimed.
 - **Backups, kept:**
 

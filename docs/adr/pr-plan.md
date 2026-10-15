@@ -395,7 +395,7 @@ The user changed the delivery strategy. This supersedes "small, stacked, indepen
       - `ac04957b95` adds the check;
       - `70082dda51` updates the readme.
     - **Fork.** The merge is `d59093e95c` (parents `693da13de8`, `70082dda51`), and `5597fca7cc` compares one row per migrations assembly, with MySQL and MariaDB collapsed as "MySQL 8.4".
-    - **State.** The orchestrator fast-forwarded `feature/multi-db` to `5597fca7cc`. It is not pushed; the coordinator pushes docs-only commits with the next code merge. This is relayed.
+    - **State.** The orchestrator fast-forwarded `feature/multi-db` to `5597fca7cc`. That code tip is on origin `feature/multi-db`, pushed by the coordinator; the orchestrator checked this read-only with `git ls-remote` on 2026-10-15 (relayed). The docs commit `ed644cf583` and its follow-up go up with the next code merge. No CI result at `5597fca7cc` is known, and none is claimed.
     - **Backups, kept.** A: `-backup-a` `788a28775a`, `-backup-b` `d1ff0939dd`. Fork `multidb/22c-merge-candidate`: `-backup-a` `ed39922868`, `-backup-b` `7452d0826e`, `-backup-c` `1f61eb54d9`.
   - **The merge resolves the group C conflicts, as B17 allows.**
     - MySQL moves to the shared generator. The copy, `MySqlPairedMigrationsIdGeneratorTests` and `ProviderSourceParityTests` go, which settles B20's first gate follow-up.
