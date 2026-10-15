@@ -67,4 +67,16 @@ All four Implementations `ProviderBackend_IsLive` and Integration `CreateClient_
 
 The retained start/end identities are the exact merge SHA, with empty status files in the detached proof worktree. The main-checkout observations also record that SHA with clean status. Docker reconciliation records empty added, removed and remaining-new-Testcontainers lists.
 
-No CI result at this new merge is available, so none is claimed. This documentation worker made no push.
+## CI at the merge
+
+Fork CI ran on PR #1 with head `a5f1e5b2c9`. The orchestrator read the check runs read-only through `gh api` and reports every completed run as success:
+
+- `format-check`;
+- `run-tests` on `ubuntu-latest`, `macos-latest` and `windows-latest`;
+- `run-tests-db` for PostgreSQL;
+- ABI: BASE, HEAD, Difference, Common Ancestor, Generate Report, and the Base and Head artifact jobs;
+- CodeQL, with Analyze (csharp).
+
+The workflow-housekeeping jobs (Rename, Rebase, Release project board, main) were skipped. These results are relayed; this documentation worker did not read the check runs, and no CI log is kept locally.
+
+CI scope is narrower than the local matrix. Its only database job is PostgreSQL, so the MySQL 8.4.11 and MariaDB 11.4.13 evidence for this merge is still the local postmerge run above. The three `run-tests` jobs passed on Ubuntu, macOS and Windows; they do not prove each provider on each platform. This documentation worker made no push.
