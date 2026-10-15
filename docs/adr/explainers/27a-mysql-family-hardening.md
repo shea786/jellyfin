@@ -1,12 +1,14 @@
-# Explainer: step 27a so far, MySQL-family hardening
+# Explainer: step 27a, MySQL-family hardening
 
-These are fork-internal study notes, not upstream PR text. They cover the three parts of 27a merged into `feature/multi-db` by 2026-10-15, each fast-forwarded by the orchestrator. Step 27a is not finished; the open items are at the end.
+These are fork-internal study notes, not upstream PR text. They cover the five parts of 27a merged into `feature/multi-db` by 2026-10-16, each fast-forwarded by the orchestrator. 27a's planned scope is complete; the remaining follow-ups are at the end, and the next step is SQL Server (ADR-0001 E2-E3).
 
 | Part | Branch | Commits on `feature/multi-db` | Evidence |
 |---|---|---|---|
 | Isolation | `multidb/27a-mysql-isolation` | `d429d74b10`, `04fde51282`, `399af59770` (on `09cd63aca8`) | `/tmp/27a-iso/` |
 | Collation | `multidb/27a-mysql-collation` | `f7edd3c017`, `a0bf39394e` | `/tmp/27a-coll/` |
 | Kit and `EngineTraits` | `multidb/27a-kit-mysql` | `c380ab7d19` to `a6cd869ce7`, 8 commits | `/tmp/27a-kit/` |
+| FolderDelete deterministic | `multidb/27a-folderdelete-deterministic` | `2f1f16c85f` (cherry-pick of `09c0b6d72e`) | `/tmp/27a-fd/` |
+| The database-ban rule | `multidb/27a-db-ban-analyzer` | `1d22afd2b3`, `a142db1590` | `/tmp/27a-ban/` |
 
 **Backups, kept:**
 - isolation: `-backup-a` `a4e74823c2`, `-backup-b` `a8f9ba5265`, `-backup-c` `e2d1f94cfc`;
@@ -153,19 +155,119 @@ A design probe confirmed it (`/tmp/27a-iso/red3/design-interceptor-only-*`). It 
 ## Gate-plan rule from here on
 
 Every commit's gate includes a Debug build: 0 errors, and a warning set no larger than the base's, not only at the tip.
-- **Why.** The analyzers that fail the build run in Debug only, as the CA1034 slip showed, and CI's `dotnet test` builds Debug.
+- **Why.** The analyzers that fail the build run in Debug only, as the CA1034 slip showed.
+  - CI's test and database jobs build Release (`ci-tests.yml:31`, `ci-tests-db.yml:85`), so they do not run those analyzers.
+  - In CI the Debug-only analyzers are enforced only by the ABI job's `dotnet build Jellyfin.Server` (`ci-compat.yml:26`), which runs on pull requests.
+  - The local per-commit Debug build is therefore the only per-commit check. (This corrects the first version of this note, which said CI's `dotnet test` builds Debug.)
 - **Scope.** It applies to the rest of 27a, to SQL Server, and to the final linear replay.
 - **Before the rule.** The isolation and collation parts were built in Debug only at their stack tips.
 
-## Open items
+## 4. FolderDelete made deterministic
 
-**FolderDelete is being made deterministic.** The FolderDelete row catches a removed `ParentId` pre-clear only by chance. In `/tmp/27a-kit/red/folderdelete-summary.tsv`, the first failure came on run 2 on MySQL and run 7 on MariaDB, and runs 1 to 6 on MariaDB passed with the break in place.
-- **The work** is on `multidb/27a-folderdelete-deterministic` (`09c0b6d72e`). The row will be made deterministic, proven by a single-run break that fails 10 of 10 times on both servers.
-- **Order.** It lands before the analyzer rule merges.
-- **Status.** Not fixed yet.
+**The commits.** The worker's commit is `09c0b6d72e`. The orchestrator cherry-picked it onto `2c95aa2622` as `2f1f16c85f`. Outside the two 27a docs files, the tree of `2f1f16c85f` is byte-identical to that of `09c0b6d72e`: the non-docs tree hash and the patch-id are the same. Every after-fix run used `09c0b6d72e`; red-old and the Debug base used `a6cd869ce7`. No run used `2f1f16c85f`.
 
-**Other 27a follow-ups, still open:**
-- a dedicated analyzer rule for the database ban, closing the hole the 20 file-wide `RS0030` disables leave;
+**Why the row was a coin toss.** The commit body says the server deletes the chain's rows in "the order of their key", which made the row catch a removed pre-clear "about one run in four".
+- **Key order.** On MySQL and MariaDB a Guid is stored as big-endian `binary(16)` (ADR-0007, `0007-guid-aggregates-and-unsupported-translations.md:85`), so key order is the byte order of the id. The random Guids put the root anywhere in that order.
+- **Probability.** The simulation `/tmp/27a-fd/scratch/sim.py` gives 0.265 per run, and 0.046 for ten passes in a row.
+- **Observed.** The old row failed 3 of 20 runs (15%).
+
+**The fix, in the kit only.** No production code changed.
+- **The ids.** The chain's ids share one random prefix, and the last byte is the depth, so the ids rise from the root.
+- **The guard.** It reads the ids back with `ORDER BY Id` on every engine.
+
+**Results** (`/tmp/27a-fd/`, from a TRX recount):
+
+| Run | Result |
+|---|---|
+| Pre-clear removed, new row (`red-new`) | 20 of 20 failed, 10 of 10 on each of MySQL 8.4.11 and MariaDB 11.4.13 |
+| Pre-clear removed, old row (`red-old`) | 3 of 20 failed: 1 of 10 and 2 of 10 |
+| Descending ids with the break (`contrast`) | 20 of 20 passed |
+| The guard | fired on all 4 engines |
+| Green | 40 of 40, 10 runs on each engine |
+| Proof | 11,454 passed, 609 skipped, 0 failed |
+| Per-commit gates | 15 of 15 |
+| Debug, as its own leg | 211 warnings on each side, empty diff |
+
+## 5. The dedicated rule for the database ban, JF0002
+
+**The commits**, on `2f1f16c85f`:
+- **`1d22afd2b3`.** Adds `DatabaseBannedSymbolsAnalyzer` (`src/Jellyfin.CodeAnalysis/DatabaseBannedSymbolsAnalyzer.cs`) with two rules:
+  - JF0002 reports a use of a banned member;
+  - JF0003 reports a list entry that names no member, only when its containing type resolves.
+
+  Both went straight into `AnalyzerReleases.Shipped.md` under Release 1.1; the repository has no Unshipped file.
+- **`a142db1590`.** Renames the list to `DatabaseBannedSymbols.txt`, so that `RS0030` no longer reads it.
+  - **Suppressions.** The 7 production suppressions move to JF0002, with their reasons: `BackupService` (2), `JellyfinMigrationService` (3), `MigrateActivityLogDb` and `StripEmbeddedLinkedChildren`.
+  - **One exception.** `MigrateLibraryDb` keeps `RS0030`, because its suppression covers a Guid operator.
+  - **The hole closes.** The 20 file-wide `RS0030` disables no longer hide the ban.
+
+**The guard.** `DatabaseBanSuppressionTests` checks that:
+- JF0002 and JF0003 appear in production `.cs` files only on `#pragma` lines;
+- only the root `Directory.Build.props` wires the rule, and nested props import their parent;
+- the 4 pinned files with a bare disable contain no banned member;
+- workflows and `.rsp` files do not switch analyzers off;
+- the ABI job's build of `Jellyfin.Server` has no configuration or property arguments, and no `Configuration` environment variable.
+
+**The canary.** `CheckDatabaseBanIsInEffect` (`Directory.Build.props:33`) is a Debug build-time check. It fails if a project the rule applies to is compiled without the analyzers or the list, with analyzers off, or with the rule in `NoWarn`.
+- **In the runs.** The canary log shows it ran in the 22 in-scope projects that were built.
+- **By the path rule.** 24 projects are in scope. The other 2 are the `fuzz/*.Fuzz.csproj` projects: they are not in `Jellyfin.sln` and CI does not build them, though the guard's source scan covers their `.cs` files.
+
+**Real metadata.** 23 of the 25 entries resolve; the 2 SQL Server entries are absent.
+
+**Negative controls** (`/tmp/27a-ban/negative/`):
+
+| Control | Result |
+|---|---|
+| N1, raw SQL in `ItemPersistenceService`, under its file-wide `RS0030` disable | Silent at the base; fails as JF0002 at (70,26) at the tip. This is the headline. |
+| N2 scoped disable, N3 test project, N4 provider | Silent, as intended |
+| N5, the environment variable | No effect |
+| N6 | 23 JF0002, 0 RS0030 |
+| N7, N8 | The canary errors |
+| N9, a nested props file without the import | Silent at build; only guard g10 catches it |
+| N10, N11, `NoWarn` and `RunAnalyzers` from the environment | The canary fires, in dependency projects |
+| N12, `ImportDirectoryBuildProps=false` from the environment | Silent. A documented limitation (`src/Jellyfin.Database/readme.md:169-174`): it drops the root props with every analyzer setting, and the tests cannot see a developer's shell. CI is covered by the workflow scan. |
+
+The first negative-control run was invalid, because of a MimeTypes `.pp` rebuild artefact. It is kept in `/tmp/27a-ban/invalid/` with `WHY.txt`.
+
+**Red mutations.** 7 analyzer breaks (m1 to m7) and 15 guard breaks (g1 to g15) each fail as intended.
+
+**Proof** (`/tmp/27a-ban/proof/`, at `a142db1590`). All gates rc 0: Release, format, the 12 database legs, the analyzer tests and the row audit.
+- **TRX rows.** 13 TRX files, 12,101 rows: 11,492 passed, 609 skipped. That is the 12 database legs (12,083 rows, 11,474 passed) plus the analyzer tests (18 of 18). I recounted them, and the orchestrator recounted them independently.
+- **Identity and Docker.** Both clean.
+
+**Per-commit gates.** Release, Debug (211 warnings, equal to the base) and format on both commits.
+
+**Debug.** The base-against-tip comparison is `/tmp/27a-ban/debug/`, on `2f1f16c85f`. `debug-base/` was built on `a6cd869ce7`; its warning set is byte-identical.
+
+**Evidence naming.** `/tmp/27a-ban/delta-backup-c-to-tip.diff` is misnamed: it is `e675334d7c..db0e73703e`, backup-c to backup-d.
+
+**Review** (relayed). Approved over three rounds. Folded in:
+- S1, guard bypasses;
+- S2, a narrowed unresolved-id check;
+- the coordinator's workflow scan and ABI-head check.
+
+## Relayed CI
+
+All green, every database job included, as read by the orchestrator:
+- isolation `399af59770`, including the advisory MariaDB 12.3.3;
+- collation `a0bf39394e`;
+- kit `a6cd869ce7`;
+- FolderDelete `2f1f16c85f`.
+
+## Status and follow-ups
+
+**Done:**
+- isolation;
+- collation;
+- the kit and `EngineTraits`;
+- the flavour sentinel;
+- the `[` escape;
+- the purge contract;
+- FolderDelete determinism (section 4; the kit run showed a first failure only on run 2 on MySQL and run 7 on MariaDB, `/tmp/27a-kit/red/folderdelete-summary.tsv`);
+- the dedicated ban rule (section 5).
+
+**Follow-ups, still open:**
+- the MySQL purge test classes; the slim `MySqlPurgeDatabaseArgumentTests` is kept by agreement;
 - complex-type properties in `TextCollationConvention`;
 - the views filter in `MySqlMigratedCollationTests`;
 - the `OldAnnotation` charset;
@@ -175,4 +277,11 @@ Every commit's gate includes a Debug build: 0 errors, and a warning set no large
 - PostgreSQL's transitive `CASCADE` against the purge contract;
 - the nullable `tableNames` parameter;
 - the inline server-version choice in `MySqlFamilyServer` and `MySqlTransactionIsolationTests`;
-- the engine switches in `StartOverTests` and `AddNormalisedMatchColumnsMigrationTests`.
+- the engine switches in `StartOverTests` and `AddNormalisedMatchColumnsMigrationTests`;
+- analyzer coverage gaps: operators, `typeof` and type-level bans;
+- JF0002 and JF0003 placed straight into `AnalyzerReleases.Shipped.md`.
+
+**Notes for the owner:**
+- **For the final upstream PR.** Whether jellyfin/jellyfin makes its ABI job a required check, since that job is what enforces the Debug-only analyzers in CI. This goes with the existing question of the PostgreSQL leg (B17).
+- **No question on the fork.** The fork's `master` has no branch protection, which is expected for a CI runner (relayed from the coordinator), so no check is required there.
+- **Fuzz projects.** They are outside CI.

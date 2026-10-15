@@ -105,7 +105,7 @@ These steps reconcile with the parity task list P1-P7. P8 is a Postgres item and
 
 | # | Branch | Scope | Key files | Tests added | Depends on | SQLite migration |
 |---|---|---|---|---|---|---|
-| 27a | `multidb/27a-conformance-kit` | The fork half of the old step 27a (ADR-0001 W5), before any SQL Server work (ADR-0001 E2-E3): (a) MySQL and MariaDB rows in the conformance kit of 22d, plus a LIKE `[` row on every engine; it replaces the MySQL purge test class. The `ParentId` row is where the step 24 pre-clear (M5) is proved on MySQL and MariaDB. (b) A test-side `EngineTraits` table replacing the engine switches in `PoolChecks`, `ModelRows`, `BackupServiceTests` and `JellyfinApplicationFactory`. (c) Escape `[` in the shared `LikePatterns` (motivated by SQL Server only, so it stays out of the upstream series). | `tests/Jellyfin.Database.Testing/*`, `LikePatterns.cs` | The kit on SQLite, PostgreSQL, MySQL and MariaDB. **In progress (B31):** merged so far, the isolation fix (`399af59770`), binary collation (`a0bf39394e`), and the kit on MySQL and MariaDB with `EngineTraits` and the `[` escape (`a6cd869ce7`). Open: a deterministic FolderDelete row, the dedicated analyzer rule for the ban, and the other follow-ups in B31. The MySQL purge test classes are still present | 22d, 26 | no |
+| 27a | `multidb/27a-conformance-kit` | The fork half of the old step 27a (ADR-0001 W5), before any SQL Server work (ADR-0001 E2-E3): (a) MySQL and MariaDB rows in the conformance kit of 22d, plus a LIKE `[` row on every engine; it replaces the MySQL purge test class. The `ParentId` row is where the step 24 pre-clear (M5) is proved on MySQL and MariaDB. (b) A test-side `EngineTraits` table replacing the engine switches in `PoolChecks`, `ModelRows`, `BackupServiceTests` and `JellyfinApplicationFactory`. (c) Escape `[` in the shared `LikePatterns` (motivated by SQL Server only, so it stays out of the upstream series). | `tests/Jellyfin.Database.Testing/*`, `LikePatterns.cs` | The kit on SQLite, PostgreSQL, MySQL and MariaDB. **Done 2026-10-16 (B31, B32):** the isolation fix (`399af59770`), binary collation (`a0bf39394e`), the kit on MySQL and MariaDB with `EngineTraits`, the flavour sentinel, the `[` escape and the purge contract (`a6cd869ce7`), a deterministic FolderDelete row (`2f1f16c85f`), and the dedicated ban rule JF0002 (`a142db1590`). Its follow-ups are listed in B32, among them the MySQL purge test classes. Next: SQL Server (ADR-0001 E2-E3) | 22d, 26 | no |
 | 27 | `multidb/27-sqlserver-provider` | `Jellyfin.Database.Providers.SqlServer` and its members (identity-insert scope, purge with `DELETE` + `RESEED`, retry codes, RCSI warning). Conventions: `binary(16)` Guid converter, BIN2 collation, `nvarchar(4000)` for text-class columns, OR filter dropped, `NoAction` on the 2 cascade FKs (ADR-0001 M5). Pool backend. **Not registered.** Written only after the SQL Server spike (ADR-0001 E3: the hazard checklist and the whole suite against a conventions-only stub) and after an ADR settles the text-class composite indexes over 1700 bytes (`Path`, `SortName`, `PresentationUniqueKey`). Entry criteria from step 20b (ADR-0005 R13): `LikeIgnoreAsciiCase` translated with an ASCII-only fold, so that `LikeIgnoreAsciiCaseBehaviourTests` and `BaseItemRepositorySortNameFilterTests` pass on this provider's pooled backends; a known-gap ledger entry, keyed to this provider, for `NameStartsWithOrGreater`/`NameLessThan` with a non-ASCII term. | New project, `Directory.Packages.props` (`Microsoft.EntityFrameworkCore.SqlServer` at the EF version, `Testcontainers.MsSql` 4.16.0) | Member tests; the suite with ADR-0006 G1/G2 and ADR-0009 G2 recorded; folder delete (M5); unique-NULL filter (M6) | 22, 27a | no |
 | 28 | `multidb/28-sqlserver-migrations-and-registration` | Baseline and registration of `Jellyfin-SqlServer` with the Experimental warning | Provider `Migrations/`, `ServiceCollectionExtensions.cs:24-27` | Migration tests (a)-(c); failing-migration test | 27 | no |
 | 29 | `multidb/29-ci-sqlserver` | Add the `SqlServer` matrix entry, not required (ADR-0010 CI3) | `.github/workflows/ci-tests.yml` | Sentinel | 28 | no |
@@ -515,7 +515,7 @@ The user changed the delivery strategy. This supersedes "small, stacked, indepen
     - **F3.** A plain `Contains` with 100k ids fails on SQLite. Upstream-note candidates, at `580005950e`: `LinkedChildrenService.cs:93`, `BaseItemRepository.TranslateQuery.cs:319`, and `ItemPersistenceService.cs:403`, `457`, `531` and `601`.
     - **F4.** A partial purge differs. PostgreSQL uses `TRUNCATE ... CASCADE`; SQLite turns foreign keys off and leaves orphans. Every current caller purges all tables. Contract note or 27a kit row.
   - **Follow-ups**, as numbered in the implementer's report. Items 2 to 10 are the implementer's words, verbatim, as relayed:
-    1. The 20 file-wide `RS0030` disables; a dedicated analyzer rule is planned for 27a.
+    1. The 20 file-wide `RS0030` disables; a dedicated analyzer rule is planned for 27a. **Done in 27a:** JF0002 (`a142db1590`, B32).
     2. Banned-symbol test TypeId: a generic declaring type is rendered wrongly and indexers aren't handled. Both can only cause a false failure.
     3. The ban is Debug-only, which is the existing pattern.
     4. ModelConformance compares the model with itself on SQLite, so it's meaningful only on PG.
@@ -671,7 +671,7 @@ The user changed the delivery strategy. This supersedes "small, stacked, indepen
     - **Process slip.** One self-reported, harmless `git restore --source=HEAD` on the worker's own scratch file.
   - **Gate-plan rule (from the coordinator).**
     - **The rule.** Every commit's gate includes a Debug build, with 0 errors and a warning set no larger than the base's, not only at the tip.
-    - **Why.** The analyzers that fail the build run in Debug only, as the CA1034 slip showed, and CI's `dotnet test` builds Debug.
+    - **Why.** The analyzers that fail the build run in Debug only, as the CA1034 slip showed, and CI's `dotnet test` builds Debug. (The second half is wrong; B32 corrects it.)
     - **Scope.** It applies to the rest of 27a, to SQL Server, and to the final linear replay. It was not in force for the isolation and collation parts.
   - **Closed by 27a:**
     - B30 findings 1 to 3;
@@ -693,3 +693,77 @@ The user changed the delivery strategy. This supersedes "small, stacked, indepen
     - the nullable `tableNames` parameter;
     - the inline server-version choice in `MySqlFamilyServer` and `MySqlTransactionIsolationTests`;
     - the engine switches in `StartOverTests` and `AddNormalisedMatchColumnsMigrationTests`.
+
+## Amendments (step 27a closed, 2026-10-16)
+
+- **B32. Step 27a: FolderDelete made deterministic and the dedicated ban rule; 27a's planned scope is complete.**
+  - Details and evidence paths are in [the 27a explainer](explainers/27a-mysql-family-hardening.md), sections 4 and 5.
+  - The orchestrator fast-forwarded both parts into `feature/multi-db`.
+  - **FolderDelete** (`/tmp/27a-fd`).
+    - **Commits.** The worker's commit `09c0b6d72e` was cherry-picked onto `2c95aa2622` as `2f1f16c85f`. Outside the two 27a docs files the trees are byte-identical (same non-docs tree hash and patch-id). Every after-fix run used `09c0b6d72e`; red-old and the Debug base used `a6cd869ce7`; no run used `2f1f16c85f`.
+    - **Cause, by source.**
+      - The commit body says the deletes follow "the order of their key", catching the break "about one run in four".
+      - Key order is Guid byte order, because MySQL and MariaDB store `binary(16)` big-endian (ADR-0007, `:85`).
+      - The simulation `/tmp/27a-fd/scratch/sim.py` gives 0.265 per run.
+      - The old row failed 3 of 20 runs.
+    - **The fix, kit only.** A shared random prefix with the last byte set to the depth, and a guard that reads the ids back with `ORDER BY Id` on every engine. There was no production bug.
+    - **Results.**
+      - With the pre-clear removed, the new row fails 10/10 on MySQL 8.4.11 and 10/10 on MariaDB 11.4.13; the old row failed 1/10 and 2/10.
+      - Descending ids with the break pass 20/20.
+      - The guard fires on all 4 engines, and green is 40/40.
+    - **Proof and gates.** Proof: 11,454 passed, 609 skipped. Per-commit gates 15/15. Debug 211/211, empty diff.
+    - This closes the B31 FolderDelete item.
+  - **The dedicated ban rule** (`1d22afd2b3`, `a142db1590`, on `2f1f16c85f`; `/tmp/27a-ban`).
+    - **The rules.** JF0002 reports the ban. JF0003 reports list entries that do not resolve, only when the containing type resolves.
+    - **The list and suppressions.** The list is renamed `DatabaseBannedSymbols.txt`, so `RS0030` no longer reads it. The 7 suppressions move to JF0002 with their reasons. `MigrateLibraryDb` stays `RS0030` because it covers a Guid operator. This closes B28 follow-up 1 and the hole the 20 file-wide disables left.
+    - **The guard, `DatabaseBanSuppressionTests`.** It covers:
+      - JF0002 and JF0003 only on `#pragma` lines in production `.cs`;
+      - only the root props wiring the rule, with nested props importing their parent;
+      - the 4 pinned bare-disable files free of banned members;
+      - no analyzer switch-off in workflows or `.rsp` files;
+      - no configuration, property or `Configuration` environment for the ABI-head build of `Jellyfin.Server`.
+    - **The canary.** `CheckDatabaseBanIsInEffect` is a Debug build-time check.
+      - It ran in the 22 in-scope projects that were built.
+      - By the path rule 24 are in scope. The other 2 are the `fuzz/*.Fuzz.csproj` projects, which are not in `Jellyfin.sln` and not built by CI, though the guard's source scan covers their files.
+    - **Real metadata.** 23 of the 25 entries resolve; the 2 SQL Server ones are absent.
+    - **Negative controls.**
+      - **N1, the headline.** Raw SQL in `ItemPersistenceService` under a file-wide `RS0030` disable is silent at the base and fails as JF0002 at (70,26) at the tip.
+      - N2 (scoped disable), N3 (test project) and N4 (provider) are silent.
+      - N5: the environment variable has no effect.
+      - N6: 23 JF0002, 0 RS0030.
+      - N7 and N8: the canary errors.
+      - N9: a nested props file without the import is silent at build; only guard g10 catches it.
+      - N10 and N11: `NoWarn` and `RunAnalyzers` from the environment fire the canary, in dependency projects.
+      - N12: `ImportDirectoryBuildProps=false` from the environment is silent, a limitation documented in `src/Jellyfin.Database/readme.md:169-174`.
+      - The first runner was invalid (a MimeTypes `.pp` rebuild artefact) and is kept in `/tmp/27a-ban/invalid` with `WHY.txt`.
+    - **Red mutations.** m1 to m7 and g1 to g15 each fail as intended.
+    - **Proof.** 13 TRX files, 12,101 rows: 11,492 passed, 609 skipped. That is the 12 database legs (11,474 passed) plus the analyzer tests (18/18), recounted by me and independently by the orchestrator.
+    - **Gates.** Per-commit gates include Release, Debug (211 = base) and format. The base-against-tip Debug comparison is `/tmp/27a-ban/debug/`, on `2f1f16c85f`; `debug-base/` was built on `a6cd869ce7`, with a byte-identical warning set.
+    - **Evidence naming.** `delta-backup-c-to-tip.diff` is misnamed: it is `e675334d7c..db0e73703e`, backup-c to backup-d.
+    - **Release tracking.** JF0002 and JF0003 went straight into `AnalyzerReleases.Shipped.md` under Release 1.1; there is no Unshipped file.
+    - **Review** (relayed). Approved over three rounds. Folded in: S1 (guard bypasses), S2 (a narrowed unresolved-id check), and the coordinator's workflow scan and ABI-head check.
+  - **Correction to the gate-plan rule's reason (B31).** The rule stands: every commit is built in Debug, because the analyzers that fail the build run only in Debug.
+    - **CI builds Release.** CI's test and database jobs build Release (`ci-tests.yml:31`, `ci-tests-db.yml:85`), not Debug.
+    - **Where CI runs the analyzers.** CI enforces the Debug-only analyzers only through the ABI job's `dotnet build Jellyfin.Server` (`ci-compat.yml:26`), on pull requests.
+  - **Relayed CI.** Read-only by the orchestrator: green at `a6cd869ce7` and at `2f1f16c85f`, every database job included.
+  - **For the owner's list (with B17's question about the PostgreSQL leg):**
+    - **The ABI job upstream.** Whether jellyfin/jellyfin makes its ABI job a required check, since that job is what enforces the Debug-only analyzers. This is a decision for the final upstream PR.
+    - **Not a fork question.** The fork's `master` has no branch protection, as expected for a CI runner (relayed from the coordinator).
+    - **Fuzz projects.** They are outside CI; a note only.
+  - **27a status.**
+    - **Done:** isolation, collation, kit and `EngineTraits`, the flavour sentinel, the `[` escape, the purge contract, FolderDelete determinism, and the dedicated ban rule. 27a's planned scope is complete.
+    - **Next:** SQL Server (ADR-0001 E2-E3).
+    - **Open follow-ups:**
+      - the MySQL purge test classes (the slim `MySqlPurgeDatabaseArgumentTests` is kept by agreement);
+      - complex-type properties in `TextCollationConvention`;
+      - the views filter;
+      - the `OldAnnotation` charset;
+      - null tables checked server-side only;
+      - `[` covered only through `LikeIgnoreAsciiCase`;
+      - `TranslateQuery.cs:270`;
+      - PostgreSQL's transitive `CASCADE`;
+      - the nullable `tableNames`;
+      - the inline server-version choice;
+      - the engine switches in `StartOverTests` and `AddNormalisedMatchColumnsMigrationTests`;
+      - analyzer coverage gaps (operators, `typeof`, type-level bans);
+      - JF0002 and JF0003 placed straight into Shipped.
