@@ -2,6 +2,7 @@ using System;
 using System.Linq;
 using Jellyfin.Database.Implementations.Entities;
 using Jellyfin.Database.Implementations.ValueConverters;
+using Jellyfin.Database.Testing;
 using Jellyfin.Server.Implementations.Tests.Data;
 using MediaBrowser.Controller.Entities;
 using Microsoft.EntityFrameworkCore;
