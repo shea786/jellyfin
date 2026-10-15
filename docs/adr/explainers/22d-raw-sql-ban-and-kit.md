@@ -14,7 +14,7 @@ These are fork-internal study notes, not upstream PR text. They describe the bra
 
 - **Backups, kept:** `-backup-a` `131c6caf67`, `-backup-b` `924f969d87`, `-backup-c` `df6c59aaa1`, `-backup-d` `5ca59314c4`.
 - **Fork merge:** `2b3bcd0649`, parents `1847099b6c` and `580005950e`, tree `9a09b376f6`.
-- **State.** The orchestrator fast-forwarded `feature/multi-db` to `2b3bcd0649`. It is not pushed yet; the coordinator pushes it. This is relayed. No CI result at `2b3bcd0649` is known, and none is claimed.
+- **State.** The orchestrator fast-forwarded `feature/multi-db` to `2b3bcd0649`. It is on origin `feature/multi-db`, pushed by the coordinator, and was checked read-only with `git ls-remote` on 2026-10-15 (relayed). The 22d docs commits go up with the next code merge. No CI result at `2b3bcd0649` is known, and none is claimed.
 - **Relevant decisions:** ADR-0001 W5, E2 and E3; pr-plan 22d, B21 and B28.
 - **Evidence:** `/tmp/22d/`.
 
@@ -62,7 +62,7 @@ The rule depends on the project's path only, normalised and compared without reg
 - **4 file-wide `RS0030` disables used no banned API, so they were removed.** They were in `MigrateLibraryDb`, `MigrateLibraryDbCompatibilityCheck`, `FolderAwareFilterExtensions` and `JellyfinQueryHelperExtensions`. The ban now reaches those files.
 - **20 file-wide `RS0030` disables remain and still hide the ban** (follow-up 1, below). They are upstream files that disable `RS0030` for the Guid operators inside query expressions. The analyzer, 5.6.0, reports every banned-symbols file under the one id `RS0030`, so the ban cannot get an id of its own that those disables would leave on. The commit message lists the 20 files.
 
-**Scope decision.** The first version of the ban needed 109 suppressions, 102 of them in tests (relayed; `/tmp/22d/dev/ban-sites*.txt` keep the call-site lists). The coordinator narrowed the ban to production code, because tests may be engine-specific by design; `ProviderFact` and the known gaps already keep those honest.
+**Scope decision.** The implementer reported that the first version of the ban needed 109 suppressions: 7 in production and 102 in tests. My union of the call-site lists in `/tmp/22d/dev/ban-sites*.txt` gives 109 sites, 107 of them under `tests/`. The difference is unreconciled, and neither figure is preferred here. The coordinator narrowed the ban to production code, because tests may be engine-specific by design; `ProviderFact` and the known gaps already keep those honest.
 
 ## The time zone helper (`cddbb29d77`)
 
@@ -205,13 +205,20 @@ The A evidence was then rerun.
 
 ## Follow-ups
 
-These are the follow-ups named to me. The implementer's report numbers 1 to 10; the others are not repeated here.
-- **1.** The 20 file-wide `RS0030` disables hide the ban. Since analyzer 5.6.0 has only `RS0030`, this is for 27a.
-- **27a:**
-  - the sentinel should distinguish the MySQL and MariaDB flavours;
-  - a kit duplication check;
-  - the MySQL and MariaDB kit rows, and removing the MySQL purge test class.
-- **Step 26:** a per-project CI sentinel check.
+The implementer's follow-ups, numbered as in the implementer's report. Items 2 to 10 are the implementer's words, verbatim, as relayed:
+
+1. The 20 file-wide `RS0030` disables still hide the ban, because analyzer 5.6.0 reports every banned-symbols file under the one id `RS0030`. A dedicated analyzer rule is planned for 27a.
+2. Banned-symbol test TypeId: a generic declaring type is rendered wrongly and indexers aren't handled. Both can only cause a false failure.
+3. The ban is Debug-only, which is the existing pattern.
+4. ModelConformance compares the model with itself on SQLite, so it's meaningful only on PG.
+5. The two SQLite-only routines (MigrateActivityLogDb, StripEmbeddedLinkedChildren) have no guard against another engine.
+6. The CI sentinel check should be per project (step 26).
+7. 27a: the sentinel doesn't tell MySQL from MariaDB. Fix it by comparing the server-reported flavour (MariaDB marker) with the selected provider, plus a negative control, using EngineTraits.
+8. The commit body could name MySqlRestoreIdentityTests and MySqlPurgeDatabaseArgumentTests (optional, not done).
+9. 27a: check whether the kit duplicates those MySQL classes.
+10. H10: no fork ids in shipped text.
+
+Also planned for 27a, from the merge: the MySQL and MariaDB kit rows, after which the MySQL purge test class can go.
 
 ## Limits
 

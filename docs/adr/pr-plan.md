@@ -463,14 +463,14 @@ The user changed the delivery strategy. This supersedes "small, stacked, indepen
       - `d6b1d8169b`, which replaces the purge tests;
       - `580005950e`, the Server sentinel.
     - **Backups:** `-backup-a` `131c6caf67`, `-b` `924f969d87`, `-c` `df6c59aaa1`, `-d` `5ca59314c4`.
-    - **Fork merge.** `2b3bcd0649` (parents `1847099b6c`, `580005950e`, tree `9a09b376f6`). The orchestrator fast-forwarded `feature/multi-db` to it. It is not pushed yet; the coordinator pushes it (relayed).
+    - **Fork merge.** `2b3bcd0649` (parents `1847099b6c`, `580005950e`, tree `9a09b376f6`). The orchestrator fast-forwarded `feature/multi-db` to it. It is on origin `feature/multi-db`, pushed by the coordinator, and was checked read-only with `git ls-remote` on 2026-10-15 (relayed). The 22d docs commits go up with the next code merge. No CI result at `2b3bcd0649` is claimed.
   - **Ban.**
     - `BannedSymbols.Database.txt` has 25 ids, verified against the package XML (`/tmp/22d/ban-ids/`).
     - It is applied by path: to every project except those under `tests/` and `Jellyfin.Database.Providers.*`. There is no opt-out property, because MSBuild imports environment variables as properties.
     - `DatabaseBannedSymbolsTests` resolves the ids by reflection; pinned exemptions apply only on `FileNotFoundException`.
     - **Suppressions.** 7 production suppressions, each scoped. On the fork, `MigrateLibraryDb` has a scoped pragma at `:85-91`, and its file-wide disable is removed. 4 unused file-wide disables were removed.
     - **Still hidden.** 20 file-wide `RS0030` disables still hide the ban. This is follow-up 1, for 27a, because analyzer 5.6.0 has only `RS0030`.
-  - **Scope decision.** The first version needed 109 suppressions, 102 of them in tests (relayed). The coordinator narrowed the ban to production code, because tests may be engine-specific by design.
+  - **Scope decision.** The implementer reported 109 suppressions in the first version: 7 in production and 102 in tests. My union of `/tmp/22d/dev/ban-sites*.txt` gives 107 under `tests/`. The difference is unreconciled, and neither figure is preferred. The coordinator narrowed the ban to production code, because tests may be engine-specific by design.
   - **Kit.**
     - 55 cases: Purge 6, Restore 2, WriteConflict 4, FolderDelete 2, DateTimeLimits 12, Like 18, IdList 8, CompositeKey 1, Model 2. The brief said Purge 5; the TRX files show 6, which makes 55.
     - SQLite: 53 passed, 2 skipped by `SQLITE-CONTAINS-PARAMETER-LIMIT`. PostgreSQL: 55 passed. MySQL and MariaDB: all skipped until 27a, 23 skipped results each.
@@ -512,9 +512,16 @@ The user changed the delivery strategy. This supersedes "small, stacked, indepen
     - **F2.** Concurrency tokens are restored as 0. Upstream-note candidate; no concrete harm.
     - **F3.** A plain `Contains` with 100k ids fails on SQLite. Upstream-note candidates, at `580005950e`: `LinkedChildrenService.cs:93`, `BaseItemRepository.TranslateQuery.cs:319`, and `ItemPersistenceService.cs:403`, `457`, `531` and `601`.
     - **F4.** A partial purge differs. PostgreSQL uses `TRUNCATE ... CASCADE`; SQLite turns foreign keys off and leaves orphans. Every current caller purges all tables. Contract note or 27a kit row.
-  - **Follow-ups named here** (the report numbers 1 to 10; I list only those relayed to me):
-    - 1, the 20 file-wide disables;
-    - 27a: sentinel MySQL vs MariaDB flavour, kit duplication check, MySQL and MariaDB kit rows;
-    - step 26: per-project CI sentinel check.
+  - **Follow-ups**, as numbered in the implementer's report. Items 2 to 10 are the implementer's words, verbatim, as relayed:
+    1. The 20 file-wide `RS0030` disables; a dedicated analyzer rule is planned for 27a.
+    2. Banned-symbol test TypeId: a generic declaring type is rendered wrongly and indexers aren't handled. Both can only cause a false failure.
+    3. The ban is Debug-only, which is the existing pattern.
+    4. ModelConformance compares the model with itself on SQLite, so it's meaningful only on PG.
+    5. The two SQLite-only routines (MigrateActivityLogDb, StripEmbeddedLinkedChildren) have no guard against another engine.
+    6. The CI sentinel check should be per project (step 26).
+    7. 27a: the sentinel doesn't tell MySQL from MariaDB. Fix it by comparing the server-reported flavour (MariaDB marker) with the selected provider, plus a negative control, using EngineTraits.
+    8. The commit body could name MySqlRestoreIdentityTests and MySqlPurgeDatabaseArgumentTests (optional, not done).
+    9. 27a: check whether the kit duplicates those MySQL classes.
+    10. H10: no fork ids in shipped text.
   - **22c CI.** Green at `5597fca7cc`, as relayed (B27).
   - **CI at `2b3bcd0649`.** No result is known, and none is claimed.
