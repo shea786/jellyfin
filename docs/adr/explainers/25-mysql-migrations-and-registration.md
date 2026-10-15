@@ -46,8 +46,9 @@ Step 24 built the provider but did not register it, and it had no migrations. Th
 - **Server version without the database.** When `database.xml` does not name the server, the provider asks the server for its version. That connection used to select the configured database, so a dropped database failed with "could not be asked for its version". It never reached the check that explains the missing database, and a first start could not create it. The connection now clears `Database` and turns pooling off, since it is used once. A server that is absent, refuses the connection, or never answers already surfaces as the same option message, and a test covers the server that does not answer.
 - **The integration server on MySQL and MariaDB.** `JellyfinApplicationFactory` creates its database through the selected provider's backend (`TestDatabaseEnvironment.Backend`), not only `PostgresTestBackend`, and writes that provider's `database.xml`. The tests that start over a lost database, and the factory tests, run on all three server engines. Losing every table on MySQL and MariaDB also removes the migration history, so the guard reports missing history there and an empty history on PostgreSQL.
 - **Paired migration ids.** The provider registers design-time services with a `PairedMigrationsIdGenerator` that reuses the id of the SQLite migration of the same name, exactly as 22b does for PostgreSQL. It warns when it cannot find the SQLite migrations.
-  - **Why a copy.** The generator is a copy, not a shared file. Both provider assemblies expose their internals to the same test project, so a type linked into both would exist twice there and fail to compile.
-  - **Drift guard.** Two tests keep the copies equal. One runs the same cases through both generators and compares ids and warnings. The other compares the source of the two generators and the two design-time services, with provider names and comments removed, and names the first line that differs.
+  - **Why a copy, in step 25.** The generator was a copy, not a shared file. Both provider assemblies expose their internals to the same test project, so a type linked into both would exist twice there and fail to compile.
+  - **Drift guard, in step 25.** Two tests kept the copies equal. One ran the same cases through both generators and compared ids and warnings. The other compared the source of the two generators and the two design-time services, with provider names and comments removed, and named the first line that differs.
+  - **Superseded by 22c.** 22c moved one internal generator into `Jellyfin.Database.Implementations.DesignTime`. Its merge `d59093e95c` moves MySQL to it, and removes the copy, `MySqlPairedMigrationsIdGeneratorTests` and `ProviderSourceParityTests`. The 22c theories now check every MySQL and MariaDB row directly ([22c explainer](22c-migration-contents-check.md), pr-plan B27).
 - **`dev/add-migration` generates the MySQL migration.** One table row in the command. The readme gains a table of providers, projects and baselines, and says MySQL and MariaDB share one set of migrations generated for MySQL 8.4, so a change is tested on both.
 - **The workflow theory covers MySQL and MariaDB.** `MigrationProvider` gains rows for MySQL 8.4 and MariaDB 11.4.7, the oldest supported version of each, because the snapshot depends on the server version. The provider has no upper version limit and builds its model for the server it finds, so rows for MySQL 9.7, MariaDB 11.8 and MariaDB 12.3 check that a newer server does not change the model. None has pending changes.
 
@@ -60,7 +61,7 @@ The review notes themselves are not kept with the evidence. What the rounds chan
 - **Newer server versions.** The offline rows for MySQL 9.7, MariaDB 11.8 and 12.3 were added in a fold-in (`/tmp/step25/m2/rows.diff`).
 - **The skip rule was tightened.** An earlier wording skipped a test whenever the provider's own migration list lacked the id. The final rule skips only ids at or before the baseline's coverage, so a genuinely missing migration fails. The fixture default moved into the baseline commit, where it belongs.
 - **Follow-ups the gate recorded, not done in this step:**
-  - the generator copy plus its parity test is accepted for now. The long-term fix is one shared design-time generator and SQLite-directory finder, kept internal in `Jellyfin.Database.Implementations` (ABI-checked). It is decided in the 22c design and must land before SQL Server adds a third copy;
+  - the generator copy plus its parity test is accepted for now. The long-term fix is one shared design-time generator and SQLite-directory finder, kept internal in `Jellyfin.Database.Implementations` (ABI-checked). It is decided in the 22c design and must land before SQL Server adds a third copy. Done in 22c (`d59093e95c`, pr-plan B27);
   - in the upstream replay, the version-detection commit becomes a fixup into step 24's commits;
   - step 27a: put "include the history in the fingerprint" into the pool contract, and move the provider-to-assembly switch out of `ProviderRequirement.MigrationIds`;
   - move `OfflineContexts` out of the PostgreSQL test namespace;
@@ -97,7 +98,7 @@ Before the step, at the sync tip `81f29427e6`: MySQL and MariaDB 2251/147 and 10
 ## Limits
 
 - The MySQL family stays Experimental and fork-only (ADR-0011): selectable, with a startup warning.
-- The 22c contents check does not exist yet, so the provider's rows in it come with 22c.
+- The 22c contents check did not exist yet in step 25. 22c added the provider's rows, compared once as "MySQL 8.4" (pr-plan B27).
 - There is no upgrade test yet from a baseline-only database to a later MySQL migration, because there is no later MySQL migration yet.
 - CI has no MySQL or MariaDB entry until step 26.
 

@@ -87,7 +87,7 @@ These steps reconcile with the parity task list P1-P7. P8 is a Postgres item and
 | 21 | `multidb/21-non-transactional-migration-guard` | `SupportsTransactionalMigrations` (default `true`) and the `migration-in-progress.json` marker (ADR-0003 S1) | `IJellyfinDatabaseProvider.cs`, `Jellyfin.Server/Migrations/JellyfinMigrationService.cs:546` | Marker lifecycle and startup refusal, using a test provider that returns `false` | 20 | no |
 | 22 | `multidb/22-harness-leased-pool` | The generic leased-pool strategy: purge plus seed data, and `fresh: true` (ADR-0002 H1-H2) | `tests/Jellyfin.Database.Testing/*` | Pool self-tests on SQLite file databases | 21 | no |
 | 22b | `multidb/22b-migration-workflow` | Contributor workflow for schema changes (ADR-0001 W1-W3). (a) A design-time `IMigrationsIdGenerator` on the PostgreSQL provider that reuses the id of the SQLite migration with the same name, found by file name in the SQLite provider's `Migrations/` (no assembly reference, ADR-0011), implementing the public interface (not the internal `MigrationsIdGenerator`: EF1001), registered with `[assembly: DesignTimeServicesReference]` so a different startup project still finds it. (b) One offline command that generates the SQLite migration first and then every other provider's. (c) One test theory over a provider table for pending model changes and id pairing, replacing the PostgreSQL-only class; every failure message names the command. (d) `src/Jellyfin.Database/readme.md` replaced by an "Adding a database change" page (the escape-hatch order of W4; review every generated migration; never hand-port SQL blindly). About 400 lines. | PostgreSQL provider `Migrations/`, the command, `PostgresMigrationBaselineTests.cs` (generalised), `src/Jellyfin.Database/readme.md` | The theory on SQLite and PostgreSQL; a generator test (same name reuses the SQLite id; a name with no SQLite migration gets a fresh id); the command run once in a throwaway checkout | 22 (cut from the pre-step-24 tip so it replays before group C) | no |
-| 22c | `multidb/22c-migration-contents-check` | Cross-engine check of migration contents (ADR-0001 W2). For every paired id, compare the operations of `Up` and `Down` by kind, table and column, ignoring annotations. A `Sql` operation present on one engine only needs an allowlist entry with a reason, ledger-style. A fix for legacy SQLite data may stay SQLite-only; a fix for a bug in current code may not. | The test project of 22b, an allowlist file | The check on every paired migration so far, with an allowlist entry for each existing one-sided `Sql` | 22b | no |
+| 22c | `multidb/22c-migration-contents-check` | Cross-engine check of migration contents (ADR-0001 W2). For every paired id, compare the operations of `Up` and `Down` by kind, table and column, ignoring annotations. A `Sql` operation present on one engine only needs an allowlist entry with a reason, ledger-style. A fix for legacy SQLite data may stay SQLite-only; a fix for a bug in current code may not. | The test project of 22b, an allowlist file | The check on every paired migration so far, with an allowlist entry for each existing one-sided `Sql`. **Done 2026-10-15:** branch tip `70082dda51`, merged as `d59093e95c`, then `5597fca7cc`; see B27 | 22b | no |
 | 22d | `multidb/22d-raw-sql-ban-and-kit` | The upstream half of the old step 27a (ADR-0001 W5): (a) banned APIs `IsSqlite`/`IsNpgsql`/`IsMySql`/`IsSqlServer`, and `ExecuteSqlRaw*`/`FromSql*`/`SqlQuery*` outside provider projects, each existing site suppressed with its reason; (b) the cross-engine conformance kit run on SQLite and PostgreSQL, replacing their per-provider purge test classes. Its rows: purge, fresh and identity; explicit identity insert and restore round trip; an induced write conflict through the classifier; a `ParentId` chain deeper than 15 and a folder delete; `MinValue`/`MaxValue` under a non-UTC `TZ`; LIKE `%`, `_` and non-ASCII; lists of 3,000 and 100,000 ids; a long composite key; model conformance. | `BannedSymbols.txt`, `tests/BannedSymbols.Tests.txt`, `tests/Jellyfin.Database.Testing/*` | The kit on SQLite and PostgreSQL | 22c | no |
 
 ## Group C: MySQL/MariaDB (Experimental, fork-only until ADR-0011 R1 is met; one provider, two matrix entries)
@@ -327,7 +327,7 @@ The user changed the delivery strategy. This supersedes "small, stacked, indepen
   - **Fork CI at `abf45dcad2`** was relayed green on every job: format, Ubuntu, macOS, Windows (8m46s), the PostgreSQL job (10m58s), ABI (no difference) and CodeQL. No local log of that run was kept.
   - **Server.Tests provenance is companion-based.** Server.Tests has no sentinel of its own. A provider run of it is attributed to its engine by the Implementations sentinel of the same run, plus the audited provider selection in `Jellyfin.Database.Testing`. Reports and explainers say so until B21 lands.
   - **Gate follow-ups:**
-    - the MySQL copy of `PairedMigrationsIdGenerator`, with its parity test, is accepted. One shared internal generator is decided in the 22c design and lands before SQL Server would add a third copy;
+    - the MySQL copy of `PairedMigrationsIdGenerator`, with its parity tests, was accepted until 22c. **Done in 22c (B27):** one shared internal generator in `Jellyfin.Database.Implementations.DesignTime`; the 22c merge `d59093e95c` moves MySQL to it and removes the copy, `MySqlPairedMigrationsIdGeneratorTests` and `ProviderSourceParityTests`;
     - in the replay, the version-detection commit becomes a fixup into step 24;
     - 27a puts the history-in-fingerprint rule into the pool contract and moves the provider-to-assembly switch out of `ProviderRequirement.MigrationIds`;
     - `OfflineContexts` leaves the PostgreSQL test namespace;
@@ -385,3 +385,69 @@ The user changed the delivery strategy. This supersedes "small, stacked, indepen
   - **Charsets .NET cannot decode.** External text subtitles in ISO-8859-16 or ISO-8859-10 come out garbled, because .NET has no encoding for either. This affects Romanian, Croatian, Polish, Latvian and Lithuanian files. On this path the parser-supported SRT is decoded in-process and never reaches FFmpeg: the only place the C# code adds `-sub_charenc` is `ConvertTextSubtitleToSrtInternal` (`SubtitleEncoder.cs:441`, the flag at `:462`), which is reached for formats the parser does not support (`SubtitleEncoder.cs:249-250`). The probable fix is to hand these files to FFmpeg with `-sub_charenc`, which #18309's comment assumes already happens. The defect predates #18309.
   - **#18309's comment and test.** The comment at `SubtitleEncoder.cs:192` ("passed to ffmpeg via -sub_charenc if needed") is wrong for this path. Its test, `GetSubtitleStream_UnsupportedEncoding_DoesNotThrow` (`SubtitleEncoderTests.cs:273`), writes ISO-8859-7, which is detected as supported, so it never reaches the new branch (see P3 in B22).
   - Open #17012 and #16393 overlap only as merge conflicts (B23). The owner may raise these upstream.
+
+## Amendments (step 22c, 2026-10-15)
+
+- **B27. Step 22c, the migration contents check, as built.** Details and evidence paths are in [the 22c explainer](explainers/22c-migration-contents-check.md).
+  - **Branches.**
+    - **Upstream-shaped.** `multidb/22c-migration-contents-check` on `d37f0d08fb`:
+      - `d95815c0cc` moves the paired id generator and the SQLite migrations finder into `Jellyfin.Database.Implementations.DesignTime`, as internal types, with no new `InternalsVisibleTo`;
+      - `ac04957b95` adds the check;
+      - `70082dda51` updates the readme.
+    - **Fork.** The merge is `d59093e95c` (parents `693da13de8`, `70082dda51`), and `5597fca7cc` compares one row per migrations assembly, with MySQL and MariaDB collapsed as "MySQL 8.4".
+    - **State.** The orchestrator fast-forwarded `feature/multi-db` to `5597fca7cc`. It is not pushed; the coordinator pushes docs-only commits with the next code merge. This is relayed.
+    - **Backups, kept.** A: `-backup-a` `788a28775a`, `-backup-b` `d1ff0939dd`. Fork `multidb/22c-merge-candidate`: `-backup-a` `ed39922868`, `-backup-b` `7452d0826e`, `-backup-c` `1f61eb54d9`.
+  - **The merge resolves the group C conflicts, as B17 allows.**
+    - MySQL moves to the shared generator. The copy, `MySqlPairedMigrationsIdGeneratorTests` and `ProviderSourceParityTests` go, which settles B20's first gate follow-up.
+    - It adds the fork-only category `BaselineCoverage`, accepted only for a row's `BaselineId`.
+    - It adds 10 `20200101000000_InitialCreate` entries: 7 `BaselineCoverage` and 3 `EngineSpecific`.
+    - The sync `81f29427e6` brought no migrations.
+  - **What the check compares.** For every id that more than one migrations assembly has, it compares the offline `Up` and `Down` operations:
+    - by kind, table and columns, with nullability, uniqueness and foreign-key on-delete;
+    - for `CreateTable`, each column and key separately;
+    - for SQL, the first 16 hex digits of the SHA-256 of the white-space-normalised text, plus a 60-character excerpt.
+  - **Allowlist rules.** `MigrationContentsAllowlist.json` is an exact-witness allowlist.
+    - The check fails on missing, stale, ambiguous and invalid entries, and on parse errors, which are wrapped. Every failure names `dev/add-migration`.
+    - `LegacySqliteData` is allowed for SQLite only, and `BaselineCoverage` only for a row's `BaselineId`.
+  - **What the check does not compare.** Annotations, types and maximum lengths, defaults and computed SQL, collations, index filters, check-constraint SQL, names of new indexes and constraints, data values, and operation order. A hand edit to one of these in one provider's migration body is caught by neither this check nor the pending-changes check, which compares the snapshot with the model.
+  - **Allowlist as merged.**
+    - **Fork:** 17 entries:
+      - 7 `BaselineCoverage`;
+      - 4 `EngineSpecific`: MySQL `AlterDatabase` utf8mb4, the PostgreSQL `min(uuid)` aggregate create and drop, and the PostgreSQL-only `DROP DEFAULT`;
+      - 6 `EquivalentSql`.
+    - **A:** 7 entries.
+    - **Tables:** `/tmp/22c/allowlist/`.
+    - **`DROP DEFAULT`.** SQLite keeps the `''` default on `Peoples.NameLower`, because it cannot drop a default without a table rebuild. EF Core writes the column on every insert, so this is an observation, not a bug, and the PostgreSQL drop is `EngineSpecific`.
+    - **`AddNormalisedMatchColumns` `Down`.** The independent reviewer hand-checked that the three SQLite SQL statements act on the same objects, in the same order, as PostgreSQL's `DropIndex` and `DropColumn` operations, and recomputed all six hashes (the reviewer's reasoning, relayed).
+  - **Correction to B17's estimate.** 12 of the fork's 57 SQLite migrations contain `migrationBuilder.Sql`, not about 40%. Only `20261013120000_AddNormalisedMatchColumns` is paired. Every earlier SQLite migration is covered by the PostgreSQL and MySQL baselines, so it is not paired or compared.
+  - **Review.** Relayed; the notes are not in the evidence.
+    - **First review: FAIL.** Blocker B1: a parse-time `JsonException` did not name the command. Should-fix: S1 to S3, C-S1 and the docs.
+    - **Re-review: APPROVE** on both shapes.
+    - **N-A1** was then folded in as a comment-only change, proven by `/tmp/22c/chain3/NA1-*.diff`, which equal the git diffs between the round 2 and final tips.
+    - **Not done.** N-A2 (a missing allowlist file is not wrapped) and N-A3 (some tests do not assert the command) are optional follow-ups.
+  - **Commit-chain rule.** No commit may be red by design, because the upstream series is reviewed commit by commit.
+    - The chain was rewritten and every commit gated (`/tmp/22c/chain3/gates/results.tsv`, `COMPLETE`, rc 0).
+    - **Incident.** One gate run was interrupted by an accidental `TaskStop`, during the format gate of the round 1 merge `5774b18c61`. It is kept as `/tmp/22c/superseded/chain-round1/gates-interrupted-1/`, and was rerun before that chain was superseded.
+  - **Format gate and replay rule.**
+    - **Branch A's format gate is "equal to base":** the same 6 errors as `d37f0d08fb`, 2 × SA1611 in `BaseItemRepositorySortNameFilterTests.cs` and 4 × SA1615 in `PostgresMigrationAtomicityTests.cs`.
+    - **Fork commits must reach rc 0.**
+    - **Replay rule.** In `multidb/upstream`, fold `62282ffd55` as a fixup into the steps that introduced those files, `bcdd6b9259` and `651c8dd720`. Evidence: `/tmp/22c/format-probe/DECISION.txt`.
+  - **Proofs.**
+    - **Fork `5597fca7cc`** (`/tmp/22c/fork-proof/`): 14/14 rc 0, Release 0/0, format 0. Passed/skipped (Implementations; Server.Tests; Integration):
+      - SQLite **2408/111; 156/9; 137/11**;
+      - PostgreSQL 16.15 **2440/76; 146/18; 144/6**;
+      - MySQL 8.4.11 and MariaDB 11.4.13 each **2368/137; 126/38; 144/6**.
+
+      11,300 TRX rows: 10,707 passed, 593 skipped. I recounted them, and the orchestrator recounted them independently. Sentinels pass; Server.Tests provenance is companion-only (B21). Docker clean; identity exact and clean.
+    - **Branch A `70082dda51`** (`/tmp/22c/A-proof/`):
+      - SQLite **2065/87; 144/8; 137/11**;
+      - PostgreSQL **2097/52; 139/13; 144/6**.
+
+      4,903 TRX rows: 4,726 passed, 177 skipped. Format is equal to base.
+    - **Debug** (`/tmp/22c/fork-debug/`, `/tmp/22c/A-debug/`): 211 against 211 on each shape, with empty diffs.
+    - **Negative controls** (`/tmp/22c/negative/{fork,A}`): missing, stale (an extra and an altered entry), the six normalised `Down` entries removed, ambiguous, and an unknown category.
+      - Each fails as expected and names `dev/add-migration`, and each run is restored to green.
+      - Fork run 1, with a bug in the script's search string, is kept in `fork-run1-needle-bug/` and noted.
+    - **Parity** (`/tmp/22c/parity/fork/`): `dev/add-migration` gave the same id on SQLite, PostgreSQL and MySQL. A name with no SQLite twin got fresh ids on PostgreSQL and MySQL.
+    - **Per-commit gates:** `/tmp/22c/chain3/gates/results.tsv`.
+  - **CI.** No CI result at `5597fca7cc` is known, and none is claimed.
