@@ -210,13 +210,15 @@ The user changed the delivery strategy. This supersedes "small, stacked, indepen
 | X1 (ours) | published on origin | Premark fix sent upstream on its own | S8 |
 | X2 (ours) | local, not pushed | Premiere date read from the broadcast date tag (`ProbeResultNormalizer.cs:1658`) | S10 |
 | X3 (ours) | local, not pushed | `GetLatestTvShowItems` subtracts 24 hours from `DateTime.MinValue` when a series' newest episode has no `DateCreated` (`BaseItemRepository.Querying.cs:343`) | Same handling as X2 (S10); B16 |
+| X6 (ours) | local, not pushed; second commit (`b4642f0dbf`) on `fix/activitylog-import-break` after X5 (`7ce3511a84`), on `aec42b345e`; fork candidate `multidb/x5-merge-candidate`, not merged | `20250420070000_MigrateActivityLogDb.cs:87` resets `sqlite_sequence` for `'ActivityLog'`, but the EF table is `ActivityLogs` (`20200514181226_AddActivityLog.cs:17`), so the reset after `RemoveRange` does nothing and re-imported entries continue from the old highest id | One-word fix with its own failing-first test, like X3; can be offered upstream alongside X5 |
 | #18381 | open | Rewrites the `recentCutoff` line in `GetLatestTvShowItems` | Would reintroduce the X3 throw if it lands without X3; rebase X3 or ask for the null check there |
 | #18423 | open | Adds `BaseItemRepositoryLatestItemListTests.cs` | A reviewer may want X3's tests moved into it |
-| #17879, #17878 | #17879 MERGED upstream on 2026-10-13 (`619eb231b4`, upstream/master `e53a6d3e6a`); #17878 not checked | #17879 moved the Microsoft pins to 10.0.12, Test.Sdk to 18.11.0 and System.Text.Json to 10.0.13, a superset of step 23 | Drop step 23 when `multidb/upstream` is built. The replay of the later steps must not touch those pins. Step 23 left the dotnet-ef tool at 10.0.11 on purpose (it only prints a version warning). |
+| #17879, #17878 | #17879 MERGED upstream on 2026-10-13 (`619eb231b4`, upstream/master `e53a6d3e6a`), merged into the fork by the 2026-10-15 sync (B18); #17878 (dotnet-ef 10.0.13) open at the 2026-10-15 scan | #17879 moved the Microsoft pins to 10.0.12, Test.Sdk to 18.11.0 and System.Text.Json to 10.0.13, a superset of step 23 | Drop step 23 when `multidb/upstream` is built. The replay of the later steps must not touch those pins. Step 23 left the dotnet-ef tool at 10.0.11; step 22b (`d4d55bcada`) moved the fork's tool to 10.0.12, which the sync keeps (upstream's tool is still 10.0.11). |
 | EF Core pins (step 23) | `f84294103c` bumps EF, Sqlite, HealthChecks and four Microsoft.Extensions pins to 10.0.12 | Upstream's dependency bot has bumped these (#17879 merged 2026-10-13, EF at 10.0.12) | At each sync and before `multidb/upstream`: if upstream is already at or past 10.0.12, drop step 23; if it moved some pins only, re-cut it against the new pins. The MySQL provider needs EF >= 10.0.12. |
 | Our code routines and migrations | step 06 adds `20261012120000_RemoveNulFromItemKeys`; step 19 adds `20261013090000_NormalizeOverlongKeys`; step 20 adds the EF migration `20261013120000_AddNormalisedMatchColumns` (SQLite and PostgreSQL, same ID) and the routine `20261013130000_BackfillNormalisedMatchColumns`, which must run after that migration | Upstream's latest routine at `e53a6d3e6a` is `20260915120000_MigrateRatingLevels`; its latest SQLite migration is `20261002210711_MakeOwnerIdIndexesPartial` | Before `multidb/upstream` is built, every routine and EF migration the series adds must sort after upstream's latest; if upstream adds a later one, re-date ours, keeping the step 20 migration before its backfill routine. Check how each interleaves with EF migrations on SQLite and that it is pre-marked on a fresh PostgreSQL install. |
 
   - Also re-run the scan's searches at each sync: `git grep -i -E "postgres|npgsql|mysql|mariadb"` on `upstream/master`, plus the commit log under `src/Jellyfin.Database`, `Jellyfin.Server.Implementations/Item`, `Jellyfin.Server/Migrations` and `FullSystemBackup` since the last sync.
+  - The scan of 2026-10-15 adds the rows in B23.
 - **S10. X2, `fix/probe-broadcast-date`, is an independent unit like X1.** The user ruled on 2026-10-12 that it is fixed as part of this work.
   - The bug: `ProbeResultNormalizer.cs:1658` looked up `WM/MediaOriginalBroadcastDateTime` but parsed the year tag, so the broadcast date never became the premiere date. Details are in ADR-0004 U3.
   - The branch is cut from `upstream/master`, not stacked on the steps, so it can be submitted on its own. It has one commit with the fix and its test.
@@ -284,3 +286,82 @@ The user changed the delivery strategy. This supersedes "small, stacked, indepen
 ## Amendments (step 24, 2026-10-14)
 
 - **Per-commit builds (2026-10-14).** `dotnet build tests/<project> --no-incremental` fails at every commit, including the base, with CS0234 for `MediaBrowser.Model.MimeTypes` (`MediaBrowser.Model/Net/MimeTypes.cs:170,196`). The `MimeTypes` 2.5.2 package compiles its type in from source, and a single-project rebuild leaves it out. A plain project build and `dotnet build Jellyfin.sln --no-incremental` are not affected. So per-commit scripts build each commit in a new worktree, or delete every `bin` and `obj` folder first, and then run a plain `dotnet build tests/<project>`.
+
+## Amendments (upstream sync and step 25, 2026-10-15)
+
+- **B18. S5 lapsed; the gated sync `81f29427e6` corrects it.**
+  - **The lapse.** `upstream/master` had not been merged into `feature/multi-db` since `61f9a9df23`. The S9 row for #17879 recorded upstream at `e53a6d3e6a` on 2026-10-13, but nothing was merged. It was a lapse of S5, not a deliberate deferral.
+  - **The merge.** `81f29427e6` merges upstream `aec42b345e` (7 commits, 15 paths) into `d38fccdf44`. Upstream changed nothing under `src/Jellyfin.Database`, `Jellyfin.Server.Implementations/Item`, `Jellyfin.Server/Migrations`, `FullSystemBackup` or CI, and added no SQLite migration or routine. So nothing was generated or re-dated.
+  - **Pure apart from its conflict resolutions.** Four files differ from both parents:
+    - `Directory.Packages.props`, the one conflict: upstream's Microsoft 10.0.12, Test.Sdk 18.11.0 and System.Text.Json 10.0.13 are taken; the fork's provider, Testcontainers and xUnit pins are kept;
+    - `CONTRIBUTORS.md`, with both names in the shared hunk;
+    - `ProbeResultNormalizer.cs` and its tests, auto-merged with X2 and upstream #18243 side by side.
+  - **Proof.** `/tmp/upstream-sync-20261015/run.Gqpr1O8j`: 17 gates rc 0, complete. Passed/skipped, 0 failed:
+    - SQLite 2314/103, 152/8, 137/11;
+    - PostgreSQL 2346/68, 146/14, Integration 144/6;
+    - MySQL and MariaDB 2251/147 and 104/55;
+    - MediaEncoding 105/1.
+
+    Debug warnings 211 unique, identical to the `d38fccdf44` baseline. A static review approved the merge as pure. Details: `explainers/sync-upstream-20261015.md`.
+- **B19. ci-fix-2, the positive-control lesson and cross-platform CI.**
+  - **The lesson.** ci-fix-1 merged at `cec9b58f17` on one APPROVE WITH NITS review. A second review judged its handle tests not approvable on test strength: parallel `ClearAllPools`, a catch-all `IOException`, and no positive control. A missing positive control on a negative-only assertion is a blocker, not a nit, even when one mutant run passes.
+  - **The fix.** ci-fix-2 (test-only, merged `d38fccdf44`) isolates the handle tests from process-wide pool clearing, adds a positive control, and checks the `.old` renames on every platform. Linux negative controls A, B and C are in `/tmp/ci-fix-2/negative`.
+  - **Post-merge proof** (`/tmp/ci-fix-2/postmerge`): 11 gates rc 0. Results match the sync proof above for SQLite, PostgreSQL Implementations/Server and both MySQL-family engines.
+  - **Fork CI at `d38fccdf44`** (`/tmp/ci-pr1/windows3.log`). Windows: Server.Tests 151/9, Implementations 2289/128, Integration 137/11, 0 failed. Among the handle tests only the Linux `/proc` positive control (`OpenLegacyFiles_FileHeldOpen_ListsTheFile`) is skipped. Format, Ubuntu, macOS, PostgreSQL, ABI, CodeQL and OpenAPI were relayed green.
+  - **Fork CI at the sync tip `81f29427e6`** was relayed all green: format, Ubuntu, macOS, Windows, the PostgreSQL job, ABI (no difference) and CodeQL. No local log of that run was kept.
+- **B20. Step 25 as built.**
+  - **Branch.** Nine commits, rebased onto `81f29427e6` with `range-diff` 9/9 identical; the pre-sync tip is kept on `multidb/25-before-sync-rebase` (`1f6dfa2e50`). Merged with `--no-ff` as `abf45dcad2`; the merge tree equals the tip tree.
+  - **Definitive proof** `/tmp/step25/definitive.V40kdWS7`. Every per-commit leg of all nine commits passed, and so did every tip gate before the container check: Release 0/0, format, the four engines, PostgreSQL twice, MariaDB 11.8 advisory 2346/137 on 11.8.9, Debug 211 equal to the sync base, the unskip reconciliation (31 passed + 4 baseline-covered skips per engine) and the `dev/add-migration` workflow run. Its rc 59 abort was a false positive of the container gate (B25). The ending HEAD and status were checked afterwards.
+  - **Post-merge proof** `/tmp/step25/postmerge`: 14 gates rc 0, complete, Release 0/0. Passed/skipped, 0 failed:
+
+    | Engine | Implementations | Server.Tests | Integration |
+    |---|---|---|---|
+    | SQLite | 2386/111 | 152/9 | 137/11 |
+    | PostgreSQL 16.15 | 2418/76 | 146/15 | 144/6 |
+    | MySQL 8.4.11 | 2346/137 | 126/35 | 144/6 |
+    | MariaDB 11.4.13 | 2346/137 | 126/35 | 144/6 |
+
+    MySQL-family Server.Tests rose from 104 to 126 passed, and the integration suite now runs on both servers.
+  - **Fork CI at `abf45dcad2`** was relayed green on every job: format, Ubuntu, macOS, Windows (8m46s), the PostgreSQL job (10m58s), ABI (no difference) and CodeQL. No local log of that run was kept.
+  - **Server.Tests provenance is companion-based.** Server.Tests has no sentinel of its own. A provider run of it is attributed to its engine by the Implementations sentinel of the same run, plus the audited provider selection in `Jellyfin.Database.Testing`. Reports and explainers say so until B21 lands.
+  - **Gate follow-ups:**
+    - the MySQL copy of `PairedMigrationsIdGenerator`, with its parity test, is accepted. One shared internal generator is decided in the 22c design and lands before SQL Server would add a third copy;
+    - in the replay, the version-detection commit becomes a fixup into step 24;
+    - 27a puts the history-in-fingerprint rule into the pool contract and moves the provider-to-assembly switch out of `ProviderRequirement.MigrationIds`;
+    - `OfflineContexts` leaves the PostgreSQL test namespace;
+    - the first MySQL migration after the baseline needs an upgrade test from a baseline-only database;
+    - document that the transactional wrapper tests service behaviour only;
+    - step 26 adds MariaDB 11.8 as an advisory CI entry.
+  - Details: `explainers/25-mysql-migrations-and-registration.md`.
+- **B21. New 22d item (upstream half): a sentinel in Server.Tests.**
+  - **The fact.** `ProviderBackend_IsLive` in `tests/Jellyfin.Server.Tests`, through `BackendLiveness.Verify`, printing the actual backend and server version. Every provider run of Server.Tests then proves its own backend.
+  - **Negative control.** A run with the wrong `JELLYFIN_TEST_EXPECTED_PROVIDER` must fail.
+  - **Scope.** Step 25's approved commits and the frozen harness stay unchanged.
+- **B22. X7, X8 and X9, under the standing rule that small upstream bugs are fixed inside this work (S10).**
+  - **When.** They start after the sync and step 25, both done, and do not block either. One at a time, like X3 and X5: an upstream-shaped branch from `upstream/master` plus a fork merge candidate, failing test first, per-commit and final-tip proofs, independent review, `--no-ff` merge, post-merge proof. Before each is cut, check upstream for an existing fix and check open #17012 and #16393 for overlap.
+  - **X7, culture-sensitive `#EXTINF`** (`SubtitleController`, already present at `61f9a9df23`). The test sets `CultureInfo.CurrentCulture` to fr-FR and restores it. With 45,000,000 ticks and segment length 10 it first fails showing `#EXTINF:4,5`, and passes with invariant formatting.
+  - **X8, global `WEBVTT` replace** (already present at `61f9a9df23`). The failing test has the cue "Say WEBVTT aloud". The fix touches only the header line and leaves the cue text unchanged.
+  - **X9, the raw-bytes return for an unsupported charset** (new upstream with #18309). Conditional: it is fixed only if a runtime test with a real ISO-8859-16 SRT, or whatever the detector actually reports as unsupported, shows garbled output where the earlier code rejected the file. Static reading or a mocked detector is not enough. If it does not reproduce, it stays on the watch list.
+  - **P3: the duplicate ISO-8859-7 test** from #18309. Recorded only.
+- **B23. S9 watch list, read-only scan of 2026-10-15.**
+
+  | Upstream | State at scan | Our response |
+  |---|---|---|
+  | #17299, #18309 | merged 2026-10-13 (`e53a6d3e6a`; backport `f624cb4cc5`), in the fork since B18 | Source of X7-X9 triage; no upstream follow-up for the raw-bytes return, EXTINF culture or WEBVTT replace yet |
+  | #17012 | open; touches `SubtitleEncoder` only | Skips charset detection for WebVTT; check for overlap before X9 |
+  | #16393 | open; touches `SubtitleEncoder` and tests | External subtitle loading for STRM; check for overlap before X9 |
+  | #17878, #18417, #18365, #17644 | Renovate, all open | dotnet-ef 10.0.13 (touches tools), SharpCompress 0.50.5, a packaging action, and xUnit v4. #17644 would collide with the fork's `xunit.v3` pins |
+  | #18381, #18423 | open, updated 2026-10-14 | Touch the X3 area (the `recentCutoff` line and its tests); responses as in S9 |
+  | #17879 | merged (`619eb231b4`) | Supersedes step 23; drop step 23 in the final replay |
+
+  X6 is added to the S9 table. No other watched PR had landed.
+  - **X5/X6 status.** Both are rebased and statically approved but not merged, and their runtime proof is still running, so they are neither merged nor proven. Limitation: the X5 fix does not repair a server whose earlier upgrade already dropped activity entries and recorded the migration as applied. Those entries survive only in `activitylog.db.old`. Any recovery path is deferred, to later or to upstream, and is not part of the fix.
+- **B24. Legacy-migration issues: upstream-note candidates, not fixed in this series.**
+  - **Crash idempotence.** `MigrateDisplayPreferencesDb` and `MigrateAuthenticationDb` save the target rows before they archive the source and before the migration history row is written. A run interrupted in between imports again on the next start and can hit unique indexes.
+  - **Swallowed rename failure.** The four legacy import routines (activity log, users, display preferences, authentication) catch the `IOException` from the archive rename and only log it. The migration is still recorded as applied, so a failed rename is silent and never retried.
+  - The owner may raise these upstream.
+- **B25. Proof-process lessons.**
+  - **Positive controls in harness audits.** A harness audit includes a full-suite TRX positive control, not only targeted subsets. Step 25's first definitive attempt stopped (rc 23) because the validator assumed one TRX result per test definition, and xUnit theories with non-serialisable data produce several results under one definition.
+  - **Child processes must not inherit the heavy lock.** A `VBCSCompiler` started by a build inherited fd 9 and held `/tmp/multidb-heavy.lock` through its idle timeout, so the next launch was refused (rc 89). Children now close fd 9 (`exec 9>&-`, or `flock -o`).
+  - **Container gates use Testcontainers labels.** On a shared machine, any new `docker ps -a` identity is not ours to judge. The gate counts only new identities with the `org.testcontainers` or session labels, and records the rest in `container-unrelated-new.txt`. Still to fold in: a short wait for our Ryuk to exit before the final snapshot.
+  - **Long runs need an exit waiter.** A watch that expires after 30 minutes missed step 25's 03:46 exit by about 4 hours. Use a background exit waiter (up to 2 hours), or re-arm the watch on every expiry.
