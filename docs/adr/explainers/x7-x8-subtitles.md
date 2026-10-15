@@ -16,7 +16,7 @@ X7 and X8 came out of the subtitle triage after the upstream sync ([sync explain
 - **X8 history.** The final upstream-shaped commit `34dc00973a` is a message-only amend of `cd12b4dcdc`: both have tree `f1be4647ed`. The earlier versions are kept as backup branches, `fix/vtt-timestamp-map-header-only-v1` (`0e3275af52`) and `-v2` (`cd12b4dcdc`).
 - **Merge trees.** The X8 merge tree `cd096ce8f9` is identical to the candidate's tree. For X7, the merge differs from the candidate only in `docs/adr` files.
 
-X7's merge `0f118c6b7c` is on the fork's origin `feature/multi-db`, which is PR #1's head; the coordinator confirmed this read-only with `git ls-remote`. X8's merge `5d8b85e832` was made locally, and its push status is not recorded. The upstream-shaped branches are local and unpushed. Neither fix has been offered upstream.
+Both fork merges, X7 `0f118c6b7c` and X8 `5d8b85e832`, are on the fork's origin `feature/multi-db`, the head of PR #1, as confirmed read-only with `git ls-remote`. The coordinator pushed them; the orchestrator and the docs writer pushed nothing. The upstream-shaped branches, `fix/hls-extinf-invariant-culture` and `fix/vtt-timestamp-map-header-only`, are local and unpushed. Neither fix has been offered upstream.
 
 ## X7: `#EXTINF` durations under a comma-decimal culture
 
@@ -117,7 +117,7 @@ Other facts from both runs:
 
   The review notes are not in the evidence directories, so these verdicts are attributed, not checked here.
 - **CI at `0f118c6b7c` (X7).** The orchestrator read the check runs with `gh`. It reports `format-check`, `run-tests` on Ubuntu, macOS and Windows, `run-tests-db` for PostgreSQL, the ABI jobs and CodeQL as successful. These results are relayed; no CI log is kept locally. CI's only database job is PostgreSQL, so the MySQL and MariaDB evidence is the local matrix.
-- **CI at `5d8b85e832` (X8).** No result is known, so none is claimed.
+- **CI at `5d8b85e832` (X8).** Pending when this was written. The orchestrator read the check runs with `gh`: `format-check`, the ABI jobs and the artifact jobs had completed with success, while `run-tests` on Ubuntu, macOS and Windows, `run-tests-db` for PostgreSQL and Analyze (csharp) were still in progress. No CI result at this merge is claimed.
 
 ## Format workspace notice
 
