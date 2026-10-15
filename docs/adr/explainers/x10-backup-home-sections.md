@@ -12,7 +12,8 @@ These are fork-internal study notes, not upstream PR text. They describe the bra
 
 **State.**
 - The orchestrator fast-forwarded `feature/multi-db` to `939887782c`.
-- It was not pushed at the time of writing; the coordinator pushes it.
+- `939887782c` is on origin `feature/multi-db`, pushed by the coordinator, and was checked read-only with `git ls-remote` on 2026-10-15 (relayed). The upstream-shaped branch stays local and unpushed.
+- The docs commits go up with the next code merge.
 - No CI result at `939887782c` is claimed.
 
 **Relevant entries:** pr-plan S9 (X10), B28 (22d finding F1) and B29. **Evidence:** `/tmp/x10/`.
