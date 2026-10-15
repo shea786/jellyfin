@@ -168,3 +168,13 @@
 ## Amendments (step 24b, 2026-10-14)
 
 - **F7. `Max` and `Min` over a union on MariaDB.** EF Core translates `Max` or `Min` over `Concat` into a scalar subquery over a `UNION ALL` derived table. When the union reads a column of the outer query, as the `DatePlayed` sort does, MariaDB cannot resolve it and fails ("Unknown column ... in 'WHERE'"). No shared query shape passed the step 24b merge bar: sixteen variants stayed one correlated subquery per row, and a pre-aggregated join took the folder and search cases from under 10 ms to 47 to 276 ms, with no filter pushdown on SQLite or PostgreSQL. So the shared query is unchanged, and the provider registers a query expression interceptor for MariaDB only. It rewrites `Max` or `Min` of two concatenated sequences, for a nullable number or `DateTime` result, into the null-safe greater or lesser of the two aggregates, each a plain scalar subquery. Other shapes and other servers keep the original query; SQLite, PostgreSQL and MySQL 8.4 send the same SQL as before. The gap `MARIADB-OUTER-REF-DERIVED` is removed. Nested unions are rewritten recursively and grow the query by about three copies per level; the only caller has one union.
+
+## Amendments (step 26, 2026-10-15)
+
+- **F8. MySQL-family CI as built.**
+  - **Every pull request.** The MySQL family's CI job now runs on every pull request, as the Experimental tier says, and also nightly and on demand. It is not a required check (`.github/workflows/ci-tests-db-mysql.yml`, step 26, pr-plan B30).
+  - **Required-tier entries.** The images of the table above, `mysql:8.4.11` and `mariadb:11.4.13`, pinned by digest.
+  - **Newest LTS.** The "newest LTS of each" in the table is now two advisory entries on every run, not only nightly. Their failure does not fail the run:
+    - **MySQL 9.7.2**, the newest LTS line; 26.7 is an Innovation release and is not tested. Release policy: <https://dev.mysql.com/doc/refman/26.7/en/mysql-releases.html>, <https://blogs.oracle.com/mysql/mysql-9-7-0-lts-is-now-available-expanded-community-capabilities-and-dynamic-data-masking-for-enterprise>.
+    - **MariaDB 12.3.3**, a long-term release maintained until June 2029. Release policy: <https://mariadb.org/mariadb-server-12-3-lts-released/>, <https://mariadb.com/docs/release-notes/community-server/12.3/12.3.1>.
+  - **Known failure.** MariaDB 11.8 and later can fail with error 1020 until 27a, because MySqlConnector sends REPEATABLE READ for a transaction without a level (pr-plan B30). That also needs a correction to ADR-0008 R3, which 27a records.

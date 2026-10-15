@@ -98,7 +98,7 @@ These steps reconcile with the parity task list P1-P7. P8 is a Postgres item and
 | 24 | `multidb/24-mysql-provider` | `Jellyfin.Database.Providers.MySql` (Microting 10.0.12) and its members. Conventions: `utf8mb4_0900_bin` on both servers (ADR-0006 C4, superseding C2), `binary(16)` Guid (ADR-0007 G2), `datetime(6)` with the `MaxValue` clamp (ADR-0004 T3), `longtext` with prefix lengths (ADR-0009 L3), all filters removed (ADR-0001 M3), identifier limit 64, interceptor for strict mode and READ COMMITTED (ADR-0008 R3), retry codes, purge, `SupportsTransactionalMigrations = false`. Backends: `MySql`, `MariaDb` (pool). **Not registered.** Entry criteria from step 20b (ADR-0005 R13): `LikeIgnoreAsciiCase` translated with an ASCII-only fold, so that `LikeIgnoreAsciiCaseBehaviourTests` and `BaseItemRepositorySortNameFilterTests` pass on this provider's pooled backends; a known-gap ledger entry, keyed to this provider, for `NameStartsWithOrGreater`/`NameLessThan` with a non-ASCII term. | New project, `Directory.Packages.props` (`Microting.EntityFrameworkCore.MySql`, `Testcontainers.MySql`/`MariaDb` 4.16.0) | Member and classifier tests; the suite on both servers, with gaps recorded; model conformance | 20b, 22, 23 (step 23 dropped from the upstream series, see S9) | no |
 | 24b | `multidb/24-dateplayed-fix` | Rewrite the `DatePlayed` sort without a derived table that references the outer item, which MariaDB cannot resolve. It changes a hot query on every engine, so it is its own step. It merges only if the SQLite and PostgreSQL plans and the benchmark do not regress; otherwise the MariaDB known gap stays. As built: no shared shape passed, so the shared query is unchanged and the MySQL provider rewrites the aggregate for MariaDB only (ADR-0011 F7). | `UnionAggregateInterceptor.cs` and its registration in the MySQL provider (planned: `Item/OrderMapper.cs`) | The existing null-order and DatePlayed tests on all four engines; own date, alternate version, both, neither, other user | 24 | no |
 | 25 | `multidb/25-mysql-migrations-and-registration` | Baseline `20200101000000_InitialCreate` covering through step 20's migration; register `Jellyfin-MySQL` with the Experimental warning. Workflow rows (ADR-0001 W3): a design-time factory with a fixed server version, the id generator of 22b, MySQL rows in 22b's theory, command and 22c's check, and a pending-changes check with the MariaDB flavour. | Provider `Migrations/`, `ServiceCollectionExtensions.cs:24-27` | Migration tests (a)-(c) on both servers; safety-net test (S1); explicit `SHOW INDEX` prefixes | 24, 22b (the workflow rows only) | no |
-| 26 | `multidb/26-ci-mysql-mariadb` | Add `MySql` and `MariaDb` matrix entries, not required, run on pull requests that touch database paths and nightly; the how-to per engine (configuration plus docker-compose) for MySQL/MariaDB and PostgreSQL from one template | `.github/workflows/ci-tests.yml`, the how-to pages | The sentinel on both | 25 | no |
+| 26 | `multidb/26-ci-mysql-mariadb` | A per-project sentinel check in the database job; `MySql` and `MariaDb` matrix entries, not required, run on every pull request, nightly and on demand, plus advisory newest-LTS entries (MySQL 9.7.2, MariaDB 12.3.3); the how-to per engine (configuration plus docker-compose) for MySQL/MariaDB and PostgreSQL from one template. **Done 2026-10-15:** tip `adf55de42f`, see B30 | `.github/workflows/ci-tests-db.yml`, `.github/workflows/ci-tests-db-mysql.yml`, `docs/database/*` | The sentinel of every database test project in its own results, on every entry | 25 | no |
 
 ## Group D: SQL Server (Experimental, fork-only unless maintainers ask; ADR-0011 R2)
 
@@ -519,7 +519,7 @@ The user changed the delivery strategy. This supersedes "small, stacked, indepen
     3. The ban is Debug-only, which is the existing pattern.
     4. ModelConformance compares the model with itself on SQLite, so it's meaningful only on PG.
     5. The two SQLite-only routines (MigrateActivityLogDb, StripEmbeddedLinkedChildren) have no guard against another engine.
-    6. The CI sentinel check should be per project (step 26).
+    6. The CI sentinel check should be per project (step 26). **Done in step 26** (`f0f4aa5f44`, B30).
     7. 27a: the sentinel doesn't tell MySQL from MariaDB. Fix it by comparing the server-reported flavour (MariaDB marker) with the selected provider, plus a negative control, using EngineTraits.
     8. The commit body could name MySqlRestoreIdentityTests and MySqlPurgeDatabaseArgumentTests (optional, not done).
     9. 27a: check whether the kit duplicates those MySQL classes.
@@ -568,3 +568,52 @@ The user changed the delivery strategy. This supersedes "small, stacked, indepen
     - **MySQL and MariaDB.** The kit rows do not run there, so the `HomeSection` identity has no committed coverage there. For 27a.
     - **A harmless `!`.** The fork's `GetGeneratedKeys` still uses `FindPrimaryKey()!`.
   - **22d CI.** Green at `2b3bcd0649`, as relayed (B28).
+
+## Amendments (step 26, 2026-10-15)
+
+- **B30. Step 26, MySQL and MariaDB in CI, and the operator docs, as built.** Details and evidence paths are in [the step 26 explainer](explainers/26-ci-mysql-mariadb.md).
+  - **Chain** on `e5a50c3707`; the orchestrator fast-forwarded `feature/multi-db` to the tip `adf55de42f`. Backups `-backup-a` to `-d`: `55e5374554`, `2e8d1f7b39`, `6afca304cb`, `6bfef4ec33`.
+    1. **`f0f4aa5f44`, the per-project sentinel check** in `ci-tests-db.yml`.
+       - Each project's own sentinel is required by full name in its own TRX.
+       - The sentinel set must equal the projects that reference `Jellyfin.Database.Testing`, both ways.
+       - The version regex is escaped, and `requiredTests` uses `project:test`.
+       - The PostgreSQL job's name, triggers and required status are unchanged, and the nightly is updated. This closes B28 follow-up 6.
+    2. **`25d552ff3e`, `ci-tests-db-mysql.yml`.**
+       - **Triggers.** On every `pull_request`, nightly and by `workflow_dispatch`. Schedule and dispatch fire only once the workflow is on the default branch.
+       - **Entries.** All digest-pinned, none required: `MySql` 8.4.11, `MariaDb` 11.4.13, and the advisory `MySql LTS newest` 9.7.2 and `MariaDb LTS newest` 12.3.3.
+       - **Sources.** The release-policy sources are cited in the workflow. MySQL 26.7 is an Innovation release.
+    3. **`08af2f5ce1`, the `docs/database` how-to pages.**
+       - They are rendered from one template by `docs/database/render` (`--check`).
+       - Known issues: the collation item, and error 1020 on MariaDB 11.8+.
+       - `HomeSection` is restored from X10 on.
+    4. **`adf55de42f`, the Compose examples** under `docs/database/compose`, with a Dockerfile overlay.
+       - `JELLYFIN_DATABASE__CONNECTIONSTRING` reaches the provider through `Program.cs:416` and `ServiceCollectionExtensions.cs:152-165`.
+       - `database.xml` is copied on the first start only.
+  - **Proofs.**
+    - **Tip proof** `/tmp/26/proof` at `6afca304cb`; everything after it touches only workflows and `docs/database` (verified). It has 14/14 gates rc 0 (not 15, as the brief said).
+
+      11,459 rows (10,827 passed, 632 skipped), recounted by me; all sentinels pass. Passed/skipped (Implementations; Server.Tests; Integration):
+      - SQLite **2462/112; 157/9; 137/11**;
+      - PostgreSQL 16.15 **2496/74; 147/18; 144/6**;
+      - MySQL 8.4.11 and MariaDB 11.4.13 each **2371/157; 127/38; 144/6**.
+    - **Debug** 211/211, empty diff.
+    - **Per-commit gates:** `/tmp/26/round3/chain/results.tsv` and `/tmp/26/round4/chain/results.tsv`.
+    - **Local CI-leg reproduction.** PostgreSQL, MySql, MariaDb, MariaDb 11.8.9 and MySql 9.7.2 succeeded. The advisory MariaDb 12.3.3 had 1 integration failure, error 1020. An earlier 11.8.9 run also hit 1020 once, in the same test, so 11.8 is intermittent.
+    - **Negative control.** With the Server sentinel filtered out, the new check fails and the old check passes. Check-step controls: 12/12.
+    - **Compose.** 6/6 bring-ups, each Healthy and logging its provider, with a dump/restore round trip. Teardown left nothing. The script's own summary line mis-grepped a tab and exited 1; the recomputed verdict is 0 of 7 failed.
+  - **Review** (relayed).
+    - **First reviewer.** CI approved, with a should-fix that 11.8 was mislabelled as the newest LTS.
+    - **Split checks.** The orchestrator checked the Compose examples and the coordinator the collation text. Several reviewers dropped on API connection errors, so the review was split.
+    - **Fold rounds:** every-PR triggers, then the advisory switch to 9.7.2/12.3.3, then the collation wording, then the 1020 known issue.
+  - **Findings for 27a.**
+    1. **Isolation, a confirmed bug.**
+       - MySqlConnector 2.6.2 (via Microting 10.0.12) maps `IsolationLevel.Unspecified` to REPEATABLE READ (`MySqlConnection.cs:195-205`), and sends `set session transaction isolation level repeatable read` before `start transaction` (`:239-250`).
+       - So every `BeginTransaction()` without a level overrides `SessionSettingsInterceptor.cs:30`'s READ COMMITTED, for the transaction and the rest of the connection.
+       - The runtime scratch check (`/tmp/26/isolation`) confirms it on 8.4.11, 9.7.2, 11.4.13, 11.8.9 and 12.3.3. With an explicit `ReadCommitted`, all five are fine.
+       - This violates ADR-0008 R3 on both servers. It is 27a's first item, and 27a records the ADR-0008 correction.
+    2. **Error 1020** (`ER_CHECKREAD`) on MariaDB 11.8 and 12.3, where `innodb_snapshot_isolation` is on by default (11.4.13 = 0, 11.8.9 = 1, 12.3.3 = 1, verified). The classifier at `MySqlDatabaseProvider.cs:183` does not retry it.
+    3. **Collation.**
+       - In the baseline, `KeyframeTicks` (`InitialCreate.cs:525`) is the only one of 102 text columns without `utf8mb4_0900_bin`. It is not indexed or keyed.
+       - `AlterDatabase` at `:15` sets only the charset, so the database default is the server's insensitive collation. `__EFMigrationsHistory` inherits it, harmlessly.
+       - Fix in 27a: the convention covers converted and primitive-collection columns, `AlterDatabase` sets the collation, the baseline is regenerated, and a test checks it.
+  - **X10 CI** (relayed). Green at `939887782c`, including `ABI - Difference`, which is consistent with the additive `DbSet`. PostgreSQL is CI's only database job.
