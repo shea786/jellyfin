@@ -195,7 +195,7 @@ The A evidence was then rerun.
 
 ## Findings
 
-- **F1 = X10: `HomeSection` is lost on restore, on every engine.** A backup does not carry it (it has no set on the context), and the purge of `DisplayPreferences` deletes its rows in cascade. A fix task is starting separately. The restore row's exception expires when it lands.
+- **F1 = X10: `HomeSection` is lost on restore, on every engine.** A backup does not carry it (it has no set on the context), and the purge of `DisplayPreferences` deletes its rows in cascade. **Fixed by X10** (`939887782c`, [X10 explainer](x10-backup-home-sections.md)), which adds the set and removes the restore row's `HomeSection` exception. On MySQL and MariaDB the sections were not deleted but left as they were after the backup, because the purge runs without foreign key checks.
 - **F2: concurrency tokens are restored as 0.** No concrete harm is known. It is an upstream-note candidate.
 - **F3: a plain `Contains` with 100,000 ids fails on SQLite.** Upstream-note candidates, with lines at `580005950e`:
   - `LinkedChildrenService.cs:93`;
@@ -224,4 +224,4 @@ Also planned for 27a, from the merge: the MySQL and MariaDB kit rows, after whic
 
 - **The ban.** It covers production code only. It is blind inside the 20 files with file-wide disables, and is checked in Debug builds.
 - **The kit.** It runs on SQLite and PostgreSQL only until 27a.
-- **CI.** No CI result at `2b3bcd0649` is known, and none is claimed.
+- **CI.** CI at `2b3bcd0649`, relayed from the orchestrator's read-only `gh` read of the check runs, all succeeded: `format-check`, `run-tests` on Ubuntu, macOS and Windows, `run-tests-db` for PostgreSQL, all ABI jobs and CodeQL with Analyze (csharp); the housekeeping jobs were skipped. No CI log is kept locally. The ABI jobs build `Jellyfin.Server` in Debug (`dotnet build Jellyfin.Server -o ./out`, `ci-compat.yml`), where the production ban is active, so their passing shows no unsuppressed banned use in `Jellyfin.Server` and its dependencies; that covers that build only, not the whole solution. The PostgreSQL job log shows `Jellyfin.Server.Tests` at 147 passed, 18 skipped, 0 failed, matching the local run where the Server sentinel passed. CI's sentinel check greps all TRX files of a job together (`ci-tests-db.yml`), and TRX artifacts are uploaded only on failure or cancellation, so CI alone does not prove the Server sentinel independently; step 26 makes the check per project. CI's only database job is PostgreSQL.

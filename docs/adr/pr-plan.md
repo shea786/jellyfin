@@ -213,6 +213,7 @@ The user changed the delivery strategy. This supersedes "small, stacked, indepen
 | X6 (ours) | locally merged with X5 in `a5f1e5b2c9`, postmerge proof green; upstream-shaped X6 `b4642f0dbf` follows X5 `7ce3511a84` on `aec42b345e`; fork pair `cecac3f9b5`, `47b844674b` (B23) | `20250420070000_MigrateActivityLogDb.cs:87` resets `sqlite_sequence` for `'ActivityLog'`, but the EF table is `ActivityLogs` (`20200514181226_AddActivityLog.cs:17`), so the reset after `RemoveRange` does nothing and re-imported entries continue from the old highest id | One-word fix with its own failing-first test, like X3; can be offered upstream alongside X5 |
 | X7 (ours) | upstream-shaped `837cf78032` (`fix/hls-extinf-invariant-culture`) on `aec42b345e`, local and unpushed; fork `68ea0d1249`, merged by `0f118c6b7c` with green post-merge proof; that merge is on origin `feature/multi-db`, pushed by the coordinator, and PR #1's CI there was green as relayed (B22) | `SubtitleController.GetSubtitlePlaylist` appended `TimeSpan.TotalSeconds` with the current culture, so fr-FR gave `#EXTINF:4,5,` | Invariant formatting with a failing-first fr-FR test; can be offered upstream on its own |
 | X8 (ours) | upstream-shaped `34dc00973a` (`fix/vtt-timestamp-map-header-only`) on `aec42b345e`, local and unpushed; fork `96b3b718a9`, merged by `5d8b85e832` with green post-merge proof; that merge is on origin `feature/multi-db`, pushed by the coordinator, and PR #1's CI there was green as relayed (B22) | `SubtitleController.GetSubtitle` replaced every `WEBVTT`, splitting cue text and header text with the timestamp map | Map only after the whole first line, with whole-output tests; can be offered upstream on its own |
+| X10 (ours) | upstream-shaped `2084aa42b2` (`fix/backup-home-sections`) on `aec42b345e`, local and unpushed; fork `939887782c` (`multidb/x10-merge-candidate`) on `3d0ab14734`, fast-forwarded into `feature/multi-db`, not pushed at the time of writing (B29) | `HomeSection` had no `DbSet`, so a backup did not carry it and a restore did not give the home-screen sections back on any engine (22d finding F1) | A singular `DbSet`, and on upstream a restore that keeps archive keys and reads them before the purge; can be offered upstream on its own |
 | #18381 | open | Rewrites the `recentCutoff` line in `GetLatestTvShowItems` | Would reintroduce the X3 throw if it lands without X3; rebase X3 or ask for the null check there |
 | #18423 | open | Adds `BaseItemRepositoryLatestItemListTests.cs` | A reviewer may want X3's tests moved into it |
 | #17879, #17878 | #17879 MERGED upstream on 2026-10-13 (`619eb231b4`, upstream/master `e53a6d3e6a`), merged into the fork by the 2026-10-15 sync (B18); #17878 (dotnet-ef 10.0.13) open at the 2026-10-15 scan | #17879 moved the Microsoft pins to 10.0.12, Test.Sdk to 18.11.0 and System.Text.Json to 10.0.13, a superset of step 23 | Drop step 23 when `multidb/upstream` is built. The replay of the later steps must not touch those pins. Step 23 left the dotnet-ef tool at 10.0.11; step 22b (`d4d55bcada`) moved the fork's tool to 10.0.12, which the sync keeps (upstream's tool is still 10.0.11). |
@@ -508,7 +509,7 @@ The user changed the delivery strategy. This supersedes "small, stacked, indepen
     - **Ban injection.** It fires in production even with the environment variable set, and is silent in tests and providers. `ItemPersistenceService` is not reported (follow-up 1).
     - **Masked run.** Purge-mutation run 1 was masked on PostgreSQL; that is F4.
   - **Findings.**
-    - **F1 = X10.** `HomeSection` is lost on restore on every engine. A fix task is starting separately.
+    - **F1 = X10.** `HomeSection` is lost on restore on every engine. **Fixed by X10** (`939887782c`, B29); the kit's `HomeSection` exception is removed.
     - **F2.** Concurrency tokens are restored as 0. Upstream-note candidate; no concrete harm.
     - **F3.** A plain `Contains` with 100k ids fails on SQLite. Upstream-note candidates, at `580005950e`: `LinkedChildrenService.cs:93`, `BaseItemRepository.TranslateQuery.cs:319`, and `ItemPersistenceService.cs:403`, `457`, `531` and `601`.
     - **F4.** A partial purge differs. PostgreSQL uses `TRUNCATE ... CASCADE`; SQLite turns foreign keys off and leaves orphans. Every current caller purges all tables. Contract note or 27a kit row.
@@ -524,4 +525,46 @@ The user changed the delivery strategy. This supersedes "small, stacked, indepen
     9. 27a: check whether the kit duplicates those MySQL classes.
     10. H10: no fork ids in shipped text.
   - **22c CI.** Green at `5597fca7cc`, as relayed (B27).
-  - **CI at `2b3bcd0649`.** No result is known, and none is claimed.
+  - **CI at `2b3bcd0649`.** CI at `2b3bcd0649`, relayed from the orchestrator's read-only `gh` read of the check runs, all succeeded: `format-check`, `run-tests` on Ubuntu, macOS and Windows, `run-tests-db` for PostgreSQL, all ABI jobs and CodeQL with Analyze (csharp); the housekeeping jobs were skipped. No CI log is kept locally. The ABI jobs build `Jellyfin.Server` in Debug (`dotnet build Jellyfin.Server -o ./out`, `ci-compat.yml`), where the production ban is active, so their passing shows no unsuppressed banned use in `Jellyfin.Server` and its dependencies; that covers that build only, not the whole solution. The PostgreSQL job log shows `Jellyfin.Server.Tests` at 147 passed, 18 skipped, 0 failed, matching the local run where the Server sentinel passed. CI's sentinel check greps all TRX files of a job together (`ci-tests-db.yml`), and TRX artifacts are uploaded only on failure or cancellation, so CI alone does not prove the Server sentinel independently; step 26 makes the check per project. CI's only database job is PostgreSQL.
+
+## Amendments (X10, 2026-10-15)
+
+- **B29. X10, the home sections in backup and restore.** Details and evidence paths are in [the X10 explainer](explainers/x10-backup-home-sections.md).
+  - **Bug.** `HomeSection` had no `DbSet`, and `BackupService` backs up and restores sets only.
+    - On SQLite and PostgreSQL, the restore's purge cascaded from `DisplayPreferences` and deleted the sections.
+    - On MySQL and MariaDB, the purge runs with `foreign_key_checks = 0`. The sections survived the purge, and the restore left the post-backup sections in place, possibly orphaned.
+    - Either way, a restore did not give the sections back. The 22d kit found this (B28 F1).
+  - **Upstream-shaped fix.** `fix/backup-home-sections` `2084aa42b2` on `aec42b345e`; `-backup-a` `9f4da47963`.
+    - **A singular set.** `public DbSet<HomeSection> HomeSection`. A plural name would rename the table and need a migration. Backup keys entries by table name and restore looks them up by set name, so a mismatch would be skipped silently.
+    - **Archive keys kept.** `System.Text.Json` does not set private setters, so `DisplayPreferences` ids were regenerated and the sections' foreign keys dangled. With the set alone, the restore failed on a foreign key after the tables were emptied.
+    - **Read before the purge.** Keys are read and validated before the purge, and keyless sets are guarded (none exist).
+    - **Caveat in the body.** Restore now writes explicit identity values. That is correct on SQLite, which raises `sqlite_sequence`. Upstream has no `IDENTITY_INSERT` for SQL Server, and on PostgreSQL the sequences would be left behind.
+  - **Fork.** `multidb/x10-merge-candidate` `939887782c` on `3d0ab14734`; `-backup-a` `8ef5f18861`, the commit before a message-only reword, with the same tree `c2591c7402`.
+    - **What it adds.** Only the set and the test, because the fork's `BackupService` already reads keys before the purge and restores generated keys plus identity hooks.
+    - **The kit.** `RestoreConformance`'s not-in-the-backup list is removed; `HomeSection` was its only entry. The RowVersion exception remains and still expires on its own.
+    - **The reword.** The body originally said "deleted on every engine", which is wrong for MySQL and MariaDB.
+    - **State.** The orchestrator fast-forwarded `feature/multi-db` to `939887782c`. It was not pushed at the time of writing; the coordinator pushes it. No CI result at `939887782c` is claimed.
+  - **Failing first.**
+    - **A.** The base with the tests only fails both new tests. The no-op-restore and no-pre-purge-read mutations fail as expected.
+    - **Fork.** The base with the test only fails on all four engines. The kept-gap kit row fails on SQLite and PostgreSQL with the "remove the table" message.
+  - **Gates.**
+    - **A.** Release 0/0; format rc 0 (the base is rc 0); SQLite Implementations 1090/1078/0 failed/12 skipped; Server.Tests 39/39.
+    - **Fork** (run at `8ef5f18861`, same tree). Release 0/0, format 0; 12 legs, total/passed/skipped:
+      - SQLite **2574/2462/112, 166/157/9, 148/137/11**;
+      - PostgreSQL **2570/2496/74, 165/147/18, 150/144/6**;
+      - MySQL and MariaDB each **2528/2371/157, 165/127/38, 150/144/6**.
+
+      11,459 rows: 10,827 Passed, 632 NotExecuted. I recounted them, and the orchestrator audited them independently. All three sentinels pass on every engine. Debug 211/211, empty diff.
+    - **Reworded commit.** The tree is identical, plus a Release and `BackupServiceTests` sanity check (65/65).
+  - **Next ids** (scratch, uncommitted, `/tmp/x10/identity-scratch/v3`). After a restore, new ids were above the restored maximum on all four engines. The PostgreSQL negative control without the completion hook collided (23505).
+  - **Backup compatibility.** The engine version stays 0.2.0.
+    - An old archive on a new server restores as before, without sections.
+    - A new archive on an old server ignores the `HomeSection` entry, without error.
+    - A version bump would make servers refuse each other's archives.
+  - **Review** (relayed). First review: APPROVE with S1 (the body), plus test hardening and the pre-purge read. Re-review: APPROVE on both shapes.
+  - **Notes.**
+    - **Upstream restore order.** Upstream restores Config and Data before a database restore it may refuse. This is pre-existing; the fork checks first. Upstream follow-up.
+    - **Two reads.** Every entry is now read twice, streamed.
+    - **MySQL and MariaDB.** The kit rows do not run there, so the `HomeSection` identity has no committed coverage there. For 27a.
+    - **A harmless `!`.** The fork's `GetGeneratedKeys` still uses `FindPrimaryKey()!`.
+  - **22d CI.** Green at `2b3bcd0649`, as relayed (B28).
