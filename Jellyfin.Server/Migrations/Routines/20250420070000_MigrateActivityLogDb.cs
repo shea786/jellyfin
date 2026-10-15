@@ -84,7 +84,7 @@ namespace Jellyfin.Server.Migrations.Routines
                 dbContext.ActivityLogs.RemoveRange(dbContext.ActivityLogs);
                 dbContext.SaveChanges();
                 // Reset the autoincrement counter
-                dbContext.Database.ExecuteSqlRaw("UPDATE sqlite_sequence SET seq = 0 WHERE name = 'ActivityLog';");
+                dbContext.Database.ExecuteSqlRaw("UPDATE sqlite_sequence SET seq = 0 WHERE name = 'ActivityLogs';");
                 dbContext.SaveChanges();
 
                 var newEntries = new List<ActivityLog>();
@@ -109,10 +109,9 @@ namespace Jellyfin.Server.Migrations.Routines
                         statement.TryBind("@Id", id);
 
                         using var reader = statement.ExecuteReader();
-                        if (reader.HasRows && reader.Read() && reader.TryGetGuid(0, out guid))
+                        if (!reader.HasRows || !reader.Read() || !reader.TryGetGuid(0, out guid))
                         {
-                            // Successfully parsed a Guid from the user table.
-                            break;
+                            guid = Guid.Empty;
                         }
                     }
 
