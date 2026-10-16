@@ -1,6 +1,6 @@
 # ADR-0012: Text-class index keys over 1700 bytes on SQL Server
 
-- **Status:** Proposed
+- **Status:** Accepted, by the orchestrator with the coordinator agreeing (2026-10-16), after independent review
 - **Date:** 2026-10-16
 
 ## Context
@@ -52,9 +52,9 @@
   - `SortName` also needs order: `ORDER BY` (`QueryBuilding.cs:378`, `OrderMapper.cs`), the range filters (`QueryBuilding.cs:239,246`) and a LIKE prefix (`QueryBuilding.cs:232`).
 - **What a failure costs: a whole folder, not one row.**
   - **The save is a batch.** A folder's scan collects every new child and calls `LibraryManager.CreateItems` once (`Folder.cs:467-610`). `UpdateItemsAsync` batches the same way (`LibraryManager.cs:2716`). Both go to `ItemPersistenceService.SaveItems`, which saves the whole batch in one transaction (`SaveItemTuples`, `ItemPersistenceService.cs:369-371`, committed at `:825-826`). One over-long row rolls back the save of every item in it.
-  - **The scan skips the rest of that folder.** Nothing in `Folder.ValidateChildrenInternal2` catches the exception. The folder's validation stops at `CreateItems` (`Folder.cs:609`), before its subfolders are validated (`:770`) and its children's metadata is refreshed (`:809`). `LimitedConcurrencyLibraryScheduler.ProcessItem` logs *"Error while performing a library operation"* and goes on with the sibling folders (`LimitedConcurrencyLibraryScheduler.cs:254-274`).
+  - **The scan skips the rest of that folder.** Nothing in `Folder.ValidateChildrenInternal2` catches the exception. The folder's validation stops at `CreateItems` (`Folder.cs:610`), before its subfolders are validated (`:770`) and its children's metadata is refreshed (`:809`). `LimitedConcurrencyLibraryScheduler.ProcessItem` logs *"Error while performing a library operation"* and goes on with the sibling folders (`LimitedConcurrencyLibraryScheduler.cs:254-274`).
   - **It never heals.** The next scan does the same, so the other new items of that folder, and the new content of its existing subfolders, never appear while the long item is there. If that folder is a library root with files at its top level, the whole library stops gaining items.
-  - **Measured, through the real `SaveItems`** (`evidence/batch-save/`, a scratch test that is not committed). 50 new movies, one of them with an over-long `Path`, in one call:
+  - **Measured, through the real `SaveItems`** (`evidence/batch-save/`, a scratch test that is not committed). 50 new movies, one of them with an over-long `Path`, in one call. The logs record no server version: SQL Server 2022 CU27, PostgreSQL 16.15 and MySQL 8.4.11 are inferred from the test backends' default images at `c0b4bcc44b`.
     - **SQL Server 2022:** Msg 1946 (*"index entry of length 1818 bytes for the index 'IX_BaseItems_Path'"*), 0 of 50 saved.
     - **PostgreSQL 16.15**, a Supported engine (3000 random characters): `54000` *"index row size 3024 exceeds btree version 4 maximum 2704 for index "IX_BaseItems_Path""*, 0 of 50 saved.
     - **SQLite**, with a trigger that raises an error for a path over 850 characters: 0 of 50 saved.
@@ -77,10 +77,14 @@ Two kinds of option are weighed. The storage and index options decide when a key
   - **Prototype measured.** The interceptor in the scratch test gives *"Item 2072a972-… cannot be saved on SQL Server: its key for index IX_BaseItems_Path takes 1818 bytes, over the limit of 1700"*. That is the same byte count the server reports, and no `INSERT` into `BaseItems` is sent.
   - **Same blast radius.** It still fails the whole batch: 0 of 50 saved. It only makes the failure attributable to a file.
   - **Cost.** It repeats the server's arithmetic in the provider: 2 bytes per code unit, plus each fixed type's width. It is provider-only and neutral to shared code.
-- **(S) Save item by item when a batch fails, in shared code.** When `SaveItems` fails on a batch of more than one item with an error that is not a retryable write conflict, it saves the items again one at a time, each in its own transaction, in the list's order. It then logs and skips only the items that fail, naming the item, its path and the cause.
+- **(S) Save item by item when a batch fails, in shared code.** When `SaveItems` fails on a batch of more than one item with an error of a row or of its data, it saves the items again one at a time, each in its own transaction, in the list's order. It then logs and skips only the items that fail, naming the item, its path and the cause.
+  - **The trigger.** A `DbUpdateException` whose innermost `DbException` has `IsTransient == false` and is not a retryable write conflict for the provider (`IsRetryableWriteConflict`). `DbException.IsTransient` is ADO.NET's own flag, which SqlClient, Npgsql, MySqlConnector and Microsoft.Data.Sqlite set.
+  - **What never triggers it:** connection failures, command time-outs (a `TimeoutException`, or SqlClient's number −2), transport and I/O errors, cancellation, and any exception that is not a `DbUpdateException`. Those are rethrown as today.
+  - **Stop early.** If the first K per-item saves all fail with the same exception type and provider error number, the fallback stops and rethrows the last error. The proposed default is K = 3; the step's design fixes it.
   - **Measured** (emulated from the test by calling `SaveItems` once per item after the failed batch): 49 of 50 saved, and only the over-long item fails, with its error, on SQL Server, PostgreSQL and SQLite. The fallback took about 1.6 s on SQL Server, 0.2 s on PostgreSQL and 0.1 s on SQLite for 50 items. It runs only after a batch failed, and costs nothing on the normal path.
-  - **What it fixes.** With the save succeeding for the rest, `CreateItems` returns, and the scan goes on into the folder's subfolders and its metadata refresh. The cost of an over-long key becomes one item missing and logged on every scan. This holds on every engine and for any error of one row, not only for key length.
-  - **Masking real errors.** A skipped item is logged at Error level on every scan, with its identity and the exception, so it is not lost silently. The fallback must not trigger on connection, time-out or deadlock errors. Those are either retried by `WriteConflictRetry` (step 07) or systemic. If the first per-item saves fail with the same kind of error, the fallback should stop and rethrow, so a lost connection does not cost N round trips.
+  - **What it fixes.** With the save succeeding for the rest, `CreateItems` returns, and the scan goes on into the folder's subfolders and its metadata refresh. The cost of an over-long key becomes one item, or one folder's subtree, missing and logged on every scan. This holds on every engine and for any error of one row, not only for key length.
+  - **A subtree can still be lost.** A folder whose own path is over the limit is skipped. Its children's paths are longer still, or reference the missing folder, so its next scan fails alike, the stop-early rule rethrows, and that folder's subtree is lost. Its sibling folders are not affected.
+  - **Masking real errors.** A skipped item is logged at Error level on every scan, with its identity and the exception, so it is not lost silently. Deadlocks and unique-key races are retried by `WriteConflictRetry` (step 07) before the fallback sees them. Connection and time-out errors never reach it (the trigger above), and the stop-early rule bounds what a systemic error that slips through can cost.
   - **Consistency.**
     - Each item's rows (the item, its ancestors, values, people, providers, streams) stay atomic, because each item is saved in its own transaction.
     - The folder's set of new children becomes partial, which is the point.
@@ -127,31 +131,37 @@ Two kinds of option are weighed. The storage and index options decide when a key
 |---|---|---|---|---|
 | (a) | fails at 851 units, whole batch | seek on `IX_BaseItems_Path` | none | none |
 | (i) | fails before SQL at 851 units, naming item and index; whole batch | seek | none | none, provider interceptor |
-| (S) | the item is skipped and logged; the rest of the batch saves | seek | none | one method in `ItemPersistenceService`, engine-neutral, no raw SQL; its own upstream-shaped step |
+| (S) | the item (or an over-long folder's subtree) is skipped and logged; the rest of the batch saves | seek | none | one method in `ItemPersistenceService`, engine-neutral, no raw SQL; its own upstream-shaped step |
 | (b) for `Path` | no limit (`nvarchar(max)` possible) | seek on the hash index once the provider adds the hash conjunct; scan without it | none | none, provider interceptor and a SQL Server-only computed column |
 | (c) | fails at the column, whole batch | seek | none | none |
 | (d) | without the index: no limit | scan on every scan of the library | none | none |
 | (e) | not applicable to the single-column `Path` index | seek | none | none |
 | (f) | fails at 1701 ASCII bytes or 567 CJK characters, whole batch | seek, with `varchar` parameters | none | none, but a startup refusal |
 
-## Decision (proposed)
+## Decision
 
 1. **Storage stays (a).** The text-class columns keep `nvarchar(4000)` on SQL Server, and keys over 1700 bytes stay the known gap `ADR-0009/G2`. It becomes a `KnownGaps` entry keyed to `SqlServer`, whose matcher accepts only `SqlException` number 1946. No other storage option removes the limit for every column. (b) removes it for `Path` alone. (f) trades ASCII room for CJK room behind a startup refusal.
-2. **The blast radius is limited by (S), as a separate shared step.**
+2. **The blast radius is limited by (S), as the independent shared step X11, `fix/save-items-per-item-fallback`, cut from `upstream/master` and merged into `feature/multi-db` before step 28.**
    - **Why.** The batch effect is the real cost, and it is not particular to SQL Server. It applies today to PostgreSQL, a Supported engine (ADR-0009 G1, measured), and to any error of one row on any engine.
-   - **What changes.** (S) turns "a folder stops gaining items" into "one item is missing and logged". It costs nothing on the normal path, and it needs no change to any query.
+   - **What changes.** (S) turns "a folder stops gaining items" into "one item, or one folder's subtree, is missing and logged". It costs nothing on the normal path, and it needs no change to any query.
    - **Where it goes.** It is an engine-neutral change to upstream behaviour, so it does not go into the SQL Server steps. It is the independent unit X11 in `pr-plan.md` (B33), cut from `upstream/master`, with failing-first tests on every engine that use a deliberately failing row. It is a candidate for the upstream series.
-3. **If (S) is not accepted, the SQL Server provider takes (b) for `Path` in step 27, together with (i).**
+3. **Only if X11 is rejected, the SQL Server provider takes (b) for `Path` in step 27, together with (i).**
    - (b) removes the realistic first case: an over-long path, now with no limit and still a seek.
    - (i) makes any other text-class overflow name its item and index.
    - SQL Server is not registered (step 28) with the folder-wide failure mode and no mitigation.
+   - Under this fallback, the folder-wide failure mode stays for the other 11 text-class columns. Only `Path` loses its limit.
 4. **(i) is not adopted alongside (S).** With (S), the per-item save already attributes the failure to the item, and the server's message names the index. (i) would duplicate the server's arithmetic for no change in outcome.
 5. **What the provider does in step 27 either way.** It does not suppress Msg 1945, because the 18 indexes are created as listed and the warnings are expected. It does not classify Msg 1946 as retryable.
 6. **Revisit triggers.**
    - **A Msg 1946 on a real library's `Path`** leads to (b) for `Path`. With (S) it shows as a skipped item in the log, and without (S) as a folder that stops growing.
    - **SQL Server is to be promoted to Supported.** ADR-0009 L2's restore invariant would then bind, so G2 must close: (b) for the equality-only columns, and (e) for `SortName`'s composites.
    - **ADR-0006 G2's ordering becomes a promotion blocker.** That leads to (f) for the text class only, with the enforcement described under (f).
-7. **The SQL Server how-to (step 29)** says plainly: an item whose path is longer than about 850 characters, or 425 characters outside the Basic Multilingual Plane such as emoji, is not saved on SQL Server. It then says what happens to the rest of its folder. Without (S), none of the folder's new items are saved and its subfolders are not scanned. With (S), only that item is missing, and the log names it.
+7. **The SQL Server how-to (step 29)** says plainly: an item whose path is longer than about 850 characters, or 425 characters outside the Basic Multilingual Plane such as emoji, is not saved on SQL Server. It then says what happens to the rest of its folder. Without (S), none of the folder's new items are saved and its subfolders are not scanned. With (S), only that item is missing, or, for an over-long folder, that folder's subtree, and the log names it.
+
+8. **PostgreSQL keeps a known gap that X11 does not close.** On PostgreSQL, a Supported engine, an item whose `Path` index key exceeds 2704 bytes never saves, while SQLite saves it (ADR-0009 G1; measured: `54000` at 3024 bytes).
+   - That is a parity gap on a Supported engine. X11 only stops it from costing the rest of the folder.
+   - At `feature/multi-db`, no `KnownGaps` entry and no test pin it.
+   - The follow-up is X12 in `pr-plan.md` (B34). The step that closes it adds a pinning test first: a `Path` over 2704 bytes saves on every engine, red on PostgreSQL.
 
 ## Consequences
 

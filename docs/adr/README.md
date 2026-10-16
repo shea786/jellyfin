@@ -19,6 +19,6 @@ These records hold the design decisions of this Jellyfin fork for first-class mu
 | [0009](0009-column-length-and-text-sanitisation.md) | Column length limits and text sanitisation | Accepted |
 | [0010](0010-ci-gating-for-database-provider-tests.md) | CI gating for database provider tests | Accepted |
 | [0011](0011-supported-database-targets.md) | Supported database targets, tiers and provider packages | Accepted |
-| [0012](0012-sqlserver-text-index-keys.md) | Text-class index keys over 1700 bytes on SQL Server | Proposed |
+| [0012](0012-sqlserver-text-index-keys.md) | Text-class index keys over 1700 bytes on SQL Server | Accepted |
 
 Supporting document: [pr-plan.md](pr-plan.md), the ordered, stacked upstream PR plan.

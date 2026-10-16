@@ -106,7 +106,7 @@ These steps reconcile with the parity task list P1-P7. P8 is a Postgres item and
 | # | Branch | Scope | Key files | Tests added | Depends on | SQLite migration |
 |---|---|---|---|---|---|---|
 | 27a | `multidb/27a-conformance-kit` | The fork half of the old step 27a (ADR-0001 W5), before any SQL Server work (ADR-0001 E2-E3): (a) MySQL and MariaDB rows in the conformance kit of 22d, plus a LIKE `[` row on every engine; it replaces the MySQL purge test class. The `ParentId` row is where the step 24 pre-clear (M5) is proved on MySQL and MariaDB. (b) A test-side `EngineTraits` table replacing the engine switches in `PoolChecks`, `ModelRows`, `BackupServiceTests` and `JellyfinApplicationFactory`. (c) Escape `[` in the shared `LikePatterns` (motivated by SQL Server only, so it stays out of the upstream series). | `tests/Jellyfin.Database.Testing/*`, `LikePatterns.cs` | The kit on SQLite, PostgreSQL, MySQL and MariaDB. **Done 2026-10-16 (B31, B32):** the isolation fix (`399af59770`), binary collation (`a0bf39394e`), the kit on MySQL and MariaDB with `EngineTraits`, the flavour sentinel, the `[` escape and the purge contract (`a6cd869ce7`), a deterministic FolderDelete row (`2f1f16c85f`), and the dedicated ban rule JF0002 (`a142db1590`). Its follow-ups are listed in B32, among them the MySQL purge test classes. Next: SQL Server (ADR-0001 E2-E3) | 22d, 26 | no |
-| 27 | `multidb/27-sqlserver-provider` | `Jellyfin.Database.Providers.SqlServer` and its members (identity-insert scope, purge with `DELETE` + `RESEED`, retry codes, RCSI warning). Conventions: `binary(16)` Guid converter, BIN2 collation, `nvarchar(4000)` for text-class columns, OR filter dropped, `NoAction` on the 2 cascade FKs (ADR-0001 M5). Pool backend. **Not registered.** Written only after the SQL Server spike (ADR-0001 E3: the hazard checklist and the whole suite against a conventions-only stub) and after an ADR settles the text-class composite indexes over 1700 bytes (`Path`, `SortName`, `PresentationUniqueKey`). **Spike done 2026-10-16 (B33):** the brief is in B33, and the index question is ADR-0012 (Proposed). Entry criteria from step 20b (ADR-0005 R13): `LikeIgnoreAsciiCase` translated with an ASCII-only fold, so that `LikeIgnoreAsciiCaseBehaviourTests` and `BaseItemRepositorySortNameFilterTests` pass on this provider's pooled backends; a known-gap ledger entry, keyed to this provider, for `NameStartsWithOrGreater`/`NameLessThan` with a non-ASCII term. | New project, `Directory.Packages.props` (`Microsoft.EntityFrameworkCore.SqlServer` at the EF version, `Testcontainers.MsSql` 4.16.0) | Member tests; the suite with ADR-0006 G1/G2 and ADR-0009 G2 recorded; folder delete (M5); unique-NULL filter (M6) | 22, 27a | no |
+| 27 | `multidb/27-sqlserver-provider` | `Jellyfin.Database.Providers.SqlServer` and its members (identity-insert scope, purge with `DELETE` + `RESEED`, retry codes, RCSI warning). Conventions: `binary(16)` Guid converter, BIN2 collation, `nvarchar(4000)` for text-class columns, OR filter dropped, `NoAction` on the 2 cascade FKs (ADR-0001 M5). Pool backend. **Not registered.** Written only after the SQL Server spike (ADR-0001 E3: the hazard checklist and the whole suite against a conventions-only stub) and after an ADR settles the text-class composite indexes over 1700 bytes (`Path`, `SortName`, `PresentationUniqueKey`). **Spike done 2026-10-16 (B33):** the brief is in B33, and the index question is ADR-0012 (Accepted, B34). Entry criteria from step 20b (ADR-0005 R13): `LikeIgnoreAsciiCase` translated with an ASCII-only fold, so that `LikeIgnoreAsciiCaseBehaviourTests` and `BaseItemRepositorySortNameFilterTests` pass on this provider's pooled backends; a known-gap ledger entry, keyed to this provider, for `NameStartsWithOrGreater`/`NameLessThan` with a non-ASCII term. | New project, `Directory.Packages.props` (`Microsoft.EntityFrameworkCore.SqlServer` at the EF version, `Testcontainers.MsSql` 4.16.0) | Member tests; the suite with ADR-0006 G1/G2 and ADR-0009 G2 recorded; folder delete (M5); unique-NULL filter (M6) | 22, 27a | no |
 | 28 | `multidb/28-sqlserver-migrations-and-registration` | Baseline and registration of `Jellyfin-SqlServer` with the Experimental warning | Provider `Migrations/`, `ServiceCollectionExtensions.cs:24-27` | Migration tests (a)-(c); failing-migration test | 27 | no |
 | 29 | `multidb/29-ci-sqlserver` | Add the `SqlServer` matrix entry, not required (ADR-0010 CI3) | `.github/workflows/ci-tests.yml` | Sentinel | 28 | no |
 
@@ -771,7 +771,7 @@ The user changed the delivery strategy. This supersedes "small, stacked, indepen
 ## Amendments (SQL Server spike, 2026-10-16)
 
 - **B33. The SQL Server spike (ADR-0001 E3) and the brief for steps 27 and 28.**
-  - Details, the full hazard checklist and evidence paths are in [the spike explainer](explainers/sqlserver-spike.md). The text-class index question is [ADR-0012](0012-sqlserver-text-index-keys.md), Proposed.
+  - Details, the full hazard checklist and evidence paths are in [the spike explainer](explainers/sqlserver-spike.md). The text-class index question is [ADR-0012](0012-sqlserver-text-index-keys.md), Accepted (B34).
   - **The spike.**
     - **Branch.** `spike/sqlserver`, not for merge: `310c4522af` (the conventions-only stub), `a9f63bf1e1` (probes) and `c0b4bcc44b` (the hooks the first run asked for).
     - **Base.** The branch was cut from `a142db1590` and rebased onto the docs-only `8845731f10`.
@@ -795,7 +795,7 @@ The user changed the delivery strategy. This supersedes "small, stacked, indepen
     - **Needs a hook:** `IDENTITY_INSERT`; the retry classifier; `LikeIgnoreAsciiCase` through `TRANSLATE`; a READ COMMITTED connection, because pooled connections keep their level; and a `datetime2` constant for `DATEADD`, because EF's untyped literal is `datetime` and year 1 fails the PremiereDate sort (Msg 517).
     - **Known gaps:** ADR-0006 G1 and G2, neither of which any suite test covers yet; `ADR-0009/G2` (ADR-0012); the sort-name range filters with a non-ASCII term (MySQL's lists, exactly).
     - **Test side:** `COUNT(*)` read as `long`; bracket quoting in a failed-write interceptor; the overlong-key seeds; the model-shape allowance; EF's process-wide service-provider warning.
-    - **One shared-code issue: the batch.** A folder's new items are saved in one transaction (`ItemPersistenceService.SaveItemTuples`). One over-long row saves none of them, and the scan then skips that folder's subfolders, on every pass. Measured: 0 of 50 saved on SQL Server, PostgreSQL (ADR-0009 G1, a Supported engine) and SQLite (a trigger raising an error); 50 of 50 on MySQL. ADR-0012 weighs the remedies; X11 below is the proposed one.
+    - **One shared-code issue: the batch.** A folder's new items are saved in one transaction (`ItemPersistenceService.SaveItemTuples`). One over-long row saves none of them, and the scan then skips that folder's subfolders, on every pass. Measured: 0 of 50 saved on SQL Server, PostgreSQL (ADR-0009 G1, a Supported engine) and SQLite (a trigger raising an error); 50 of 50 on MySQL. ADR-0012 weighs the remedies; X11 below is the accepted one (B34).
   - **Corrections to record in step 27:**
     - **ADR-0007 G1.** `MIN` over `uniqueidentifier` exists on 2022 CU27 and 2025; its order is the problem, and `binary(16)` stays.
     - **ADR-0008 R3.** On SQL Server, as on MySQL (S5), the provider must start transactions at READ COMMITTED itself.
@@ -806,7 +806,7 @@ The user changed the delivery strategy. This supersedes "small, stacked, indepen
       - `Microsoft.EntityFrameworkCore.SqlServer` at the EF version, and `Testcontainers.MsSql` 4.16.0, both central.
       - Pin `System.Security.Cryptography.Pkcs` 10.0.13, because SqlClient 6.1.6 brings 9.0.11, flagged NU1902 and NU1903.
       - Review SqlClient's Azure dependency tree as ADR-0011 R1 did for MySQL.
-      - Its reviewer runs `dotnet list package --vulnerable --include-transitive` at the tip. The spike's run at its own tip is clean (`evidence/vulnerable-packages-tip.txt`).
+      - Its reviewer runs `dotnet list package --vulnerable --include-transitive` at the tip. The spike's run is clean for the provider project at the spike tip (`evidence/vulnerable-packages-tip.txt`); the reviewer covers the whole solution.
       - Test image `mcr.microsoft.com/mssql/server:2022-CU27-GDR1-ubuntu-22.04`, the security update of CU27 and the tag `2022-latest` points at. Its digest, `sha256:cf8f0ab2ebe61feec2eed2629061a07d247f791c2a8ddda74a4ac9f06a291718`, was read from MCR on 2026-10-16. The spike ran on the pre-GDR `2022-CU27-ubuntu-22.04` (`sha256:4402d880…a090`), so step 27 runs the suite on the GDR image before pinning it.
     - **Conventions, each with a model test.**
       - `binary(16)` Guids through `ToByteArray(bigEndian: true)` (ADR-0007 P2).
@@ -876,9 +876,12 @@ The user changed the delivery strategy. This supersedes "small, stacked, indepen
     - **Isolation.** SQL Server gets the READ COMMITTED connection fix, including the reset for statements outside a transaction, and the ADR-0008 amendment.
     - **CI.** An advisory 2025 job alongside the 2022 job; neither is required.
     - **Restore.** The claim that a restore rolls back as a whole becomes a red test in step 27, not later.
-  - **X11 (proposed), save item by item after a failed batch** (ADR-0012 option (S)).
+  - **X11, save item by item after a failed batch** (ADR-0012 option (S); accepted, B34).
     - **Shape.** An independent unit cut from `upstream/master`, like the other X rows: `fix/save-items-per-item-fallback`. It is not part of the SQL Server steps, and it is reviewed on its own.
-    - **The change.** When `ItemPersistenceService.SaveItems` fails on a batch of more than one item with an error that is not a retryable write conflict, it saves the items one at a time, each in its own transaction, in list order. It skips an item whose primary or owner failed, logs each skipped item at Error with its id, path and exception, and rethrows if the first per-item saves fail alike.
+    - **The change.** When `ItemPersistenceService.SaveItems` fails on a batch of more than one item with an error of a row or of its data, it saves the items one at a time, each in its own transaction, in list order. It skips an item whose primary or owner failed, and logs each skipped item at Error with its id, path and exception.
+    - **The trigger, exactly.** A `DbUpdateException` whose innermost `DbException` has `IsTransient == false` and is not a retryable write conflict for the provider. Connection failures, command time-outs (`TimeoutException`, SqlClient −2), transport and I/O errors, cancellation, and anything that is not a `DbUpdateException` never trigger it, and are rethrown as today.
+    - **Stop early.** If the first K per-item saves fail with the same exception type and provider error number, the fallback rethrows. The proposed default is K = 3, fixed in the step's design.
+    - **What it still loses.** An over-long folder's children fail alike, so the stop-early rule rethrows and that folder's subtree is lost; sibling folders are not affected.
     - **Failing-first tests on every engine**, with a deliberately failing row:
       - SQLite and MySQL/MariaDB: a trigger;
       - PostgreSQL: a path over 2704 bytes (`54000`), or a trigger;
@@ -898,3 +901,30 @@ The user changed the delivery strategy. This supersedes "small, stacked, indepen
     - **Floor entry.** A `SqlServer` entry on 2022 CU27 GDR1, pinned by digest and not required (ADR-0010 CI3).
     - **An advisory entry**, decided by the coordinator, for `2025-CU9-GDR1-ubuntu-24.04` (`sha256:742481d1b1186cccc81220a1eaacef244ca8d0f7d19c8e5c70df8ae541ffbab2`), as MySQL 9.7.2 and MariaDB 12.3.3 are. Its failure would not fail the run. 2025 is GA with mainstream support to 2031; the spike found no behavioural difference; and new databases at compatibility level 170 are where a later EF default would first differ.
     - **The how-to** says plainly that an item whose path is longer than about 850 characters is not saved on SQL Server, and what that does to the rest of its folder (ADR-0012, decision 7).
+
+## Amendments (ADR-0012 accepted, 2026-10-16)
+
+- **B34. ADR-0012 is accepted, and follow-up X12 is added.**
+  - **Decision.** Taken by the orchestrator, with the coordinator agreeing, after independent review of the docs commits on `docs/sqlserver-spike`:
+    - storage is ADR-0012 (a): `nvarchar(4000)` for the text-class columns, with the known gap `ADR-0009/G2`;
+    - the blast radius is limited by (S), the independent shared step X11 (`fix/save-items-per-item-fallback`), cut from `upstream/master` and merged into `feature/multi-db` before step 28;
+    - (b) for `Path` plus the pre-save check (i) applies only if X11 is rejected.
+  - **Review leftovers folded in.**
+    - X11's trigger is exact: non-transient row or data errors only, with an explicit list of what never triggers it, and stop-early at K = 3 proposed.
+    - (S) can still lose an over-long folder's subtree.
+    - Under (b) and (i), the folder-wide mode stays for the other 11 text-class columns.
+    - `Folder.cs:610`.
+    - Server versions in the batch measurement are inferred.
+    - The package scan covers the provider project only.
+    - The cause of the missing `end-identity.txt` is stated as possible, not certain.
+  - **X12 (follow-up, after X11): PostgreSQL text-class index keys over 2704 bytes.**
+    - **The gap.** On PostgreSQL, a Supported engine, an item whose `Path` index key exceeds 2704 bytes never saves, while SQLite saves it (ADR-0009 G1; measured `54000` at 3024 bytes). X11 limits it to that item but does not close it. No `KnownGaps` entry or test pins it today, and ADR-0009's `BaseItem_PathOver2704Bytes` was not found (ADR-0009 L7, ADR-0012 decision 8).
+    - **First, the query shapes on `Path`.** The spike found equality (`TranslateQuery.cs:330`) and membership (`ItemPersistenceService.cs:612,698`) in the database layer, and no prefix or LIKE. X12 checks every caller before choosing.
+    - **Then weigh, for equality and membership:**
+      - a PostgreSQL `USING hash` index on `Path`, which has no 2704-byte limit;
+      - an expression index on `md5("Path")` with the predicate rewritten to use it.
+      - Say what a prefix or LIKE query would need if one exists.
+    - **Confirm MySQL.** Its index-prefix behaviour (50 of 50 saved with a 909-character path) must match ADR-0009 L6, with `SHOW INDEX` showing an explicit `Sub_part`.
+    - **Tests.** The pinning test comes first: a `Path` over 2704 bytes saves on every engine, red on PostgreSQL until the fix. The other text-class columns are listed with their status.
+    - **Order.** After X11, and in the plan before the final replay (B31). It goes into the owner's final report.
+

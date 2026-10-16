@@ -165,3 +165,12 @@ The step 19 gate showed that L2's premise is false for several key-class columns
   - **No uniqueness over a prefix.** A primary key, a unique index or a foreign key over a text column that has no maximum length is refused when the model is built, with a message naming the column. A prefix would make two different values equal for the index.
   - **Unindexed text is `longtext`.** `UnindexedTextConvention` stores every text column that is not in a key, a foreign key or an index as `longtext`, whatever maximum length the model gives it. A `varchar(n)` column would reject a longer value, while SQLite and PostgreSQL store it whole.
   - **Sorting.** MariaDB compares only the first `max_sort_length` bytes (1024 by default) of a `longtext` value in `ORDER BY`; MySQL 8.4 does not limit it for this collation. Two names longer than 1024 bytes that share their first 1024 bytes can therefore come back in either order on MariaDB. The how-to mentions it. Raising the setting costs sort memory and is left to the operator.
+
+## Amendments (SQL Server spike, 2026-10-16)
+
+- **L7. G1 costs a whole folder, not one row, and it is not pinned (cross-reference).**
+  - **The batch.** A folder's new items are saved in one transaction. One `Path` over 2704 bytes on PostgreSQL therefore saves none of them: measured `54000` at 3024 bytes, 0 of 50 saved. The scan then skips that folder's subfolders on every pass.
+  - **ADR-0012 decides the remedy.** X11 saves item by item after a failed batch, so the cost becomes the one item, or an over-long folder's subtree.
+  - **The parity gap stays.** The item itself still never saves on PostgreSQL, while SQLite saves it. ADR-0012 decision 8 records this as a PostgreSQL known gap.
+  - **Not pinned yet.** At `feature/multi-db` no `KnownGaps` entry or test pins G1. The `BaseItem_PathOver2704Bytes` test of "Tests required (b)" was not found. Follow-up X12 (`pr-plan.md`, B34) closes or pins it, and adds the pinning test first.
+
