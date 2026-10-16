@@ -39,7 +39,7 @@
 - **NUL (a, remove).** `JellyfinDbContext.SaveChanges`/`SaveChangesAsync` call a `SanitizeStrings()` step next to `HandleConcurrencyToken()` (`JellyfinDbContext.cs:265,291`). It strips U+0000 from every string property of `Added`/`Modified` entries, for all providers.
   - `LikePatterns` (ADR-0005) and `GetCleanValue` also strip NUL from query input.
   - Rule: user-sourced strings never go through `ExecuteUpdate` or raw SQL, because those bypass the hook.
-- **Long indexed values:** accepted as a known gap for v1 (`KnownGaps` `ADR-0009/G1`). Its pinning test is the long-`Path` row of the conformance kit (`BatchSaveConformance.SaveItemsSkippingFailures_OneItemWithAPathOverTheIndexKeyLimit_SavesEveryItem`), marked with the known gap `PG-PATH-INDEX-KEY` (X11, L7). Options for later: a hash index or an `md5(...)` expression index for equality-only lookups, chosen after checking which `Path` predicates need btree order.
+- **Long indexed values:** accepted as a known gap for v1 (`KnownGaps` `ADR-0009/G1`; the entry's id is `PG-PATH-INDEX-KEY`). Its pinning test is the long-`Path` row of the conformance kit (`BatchSaveConformance.SaveItemsSkippingFailures_OneItemWithAPathOverTheIndexKeyLimit_SavesEveryItem`), marked with the known gap `PG-PATH-INDEX-KEY` (X11, L7). Options for later: a hash index or an `md5(...)` expression index for equality-only lookups, chosen after checking which `Path` predicates need btree order.
 
 ## Consequences
 
