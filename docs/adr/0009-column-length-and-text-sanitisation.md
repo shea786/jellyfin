@@ -177,3 +177,52 @@ The step 19 gate showed that L2's premise is false for several key-class columns
     - On PostgreSQL the gap's matcher accepts only `54000` naming `IX_BaseItems_Path`. That is the error the fallback logged for the item, which the row throws again.
     - Follow-up X12 (`pr-plan.md`, B34) closes G1 and removes that `KnownGaps` entry. The marker forces the removal: once PostgreSQL saves the path, the row fails with "remove the KnownGap marker".
 
+
+## Amendments (X12, 2026-10-16)
+
+- **L8. G1 is closed for `Path` on PostgreSQL: `IX_BaseItems_Path` is a hash index.** This supersedes the "Long indexed values" part of the Decision for `Path`, and L4's rejection of a hash for it. L4 rejected a hashed key column that every engine and every predicate would carry; this is an index method on PostgreSQL only.
+  - **The gap.** A btree index entry holds at most 2704 bytes, so an item whose `Path` does not compress to that size never saved on PostgreSQL. SQLite saved it.
+    - Measured at the base `93c7ffec57`: `54000` "index row size 3024 exceeds btree version 4 maximum 2704" at 3008 random letters, and "index row requires 10016 bytes" at 10,000 bytes.
+    - Btree entries are compressed: a repetitive 4000-byte path was stored in 124 bytes and saved. Incompressible values failed: random letters at 2700, random CJK at 1000 characters (3000 bytes, a 3016-byte entry). That is context only: G1 was real for any path that does not compress.
+  - **How `Path` is queried.** Shared code at `93c7ffec57`, with the SQL captured from EF's real calls.
+    - Equality: `BaseItemRepository.TranslateQuery.cs:327-331`, through `LibraryManager.FindByPath`.
+    - Membership: `ItemPersistenceService.cs:637-642` and `:723-728`. EF sends `"Path" = ANY (@p) ORDER BY "Path" NULLS FIRST`; the order comes from a final `GroupBy`.
+    - Migration routines: equality (`FixIncorrectOwnerIdRelationships.cs:104-113`), and whole-table `GROUP BY` or `ORDER BY "Path"` (`:71-77`, `MigrateLinkedChildren.cs:78-82`, `RestorePlaylistChildrenFromMetadata.cs:58-62`).
+    - No query on `Path` uses a prefix, `LIKE`, a range, `StartsWith` in SQL or `IS NULL`, and there is no `ItemSortBy` key for it.
+  - **Options measured.** On PostgreSQL 16.15 with 300,001 items, each plan is `EXPLAIN ANALYZE` of EF's own command (`/tmp/x12/evidence/options/`).
+
+    | Option | 3024 B and 10,000 B paths | Equality | `= ANY` + order | Whole-table routines | Size, build |
+    |---|---|---|---|---|---|
+    | btree (before) | `54000` | Index Scan, 0.09 ms | ordered Index Scan, 0.03 ms | Seq Scan + sort, the btree unused | 35 MB, about 0.15 s |
+    | **hash** | saved, found by path | Index Scan, 0.08 ms | Bitmap Index Scan + sort of a few rows, 0.02 ms | unchanged | 8.2 MB, about 0.17 s |
+    | btree on `md5("Path")` | saved | Seq Scan, 650 ms, until each predicate gains `md5("Path") = md5(@p)` | Seq Scan, 20 ms | unchanged | 17 MB |
+    | partial btree, `octet_length <= 2000` | saved | Seq Scan, until each predicate repeats the condition | Seq Scan | unchanged | 35 MB |
+
+    A `hashtext` expression index was not measured. `hashtext` is internal and undocumented, so it was rejected without a measurement.
+  - **Decision.** Hash, approved by the orchestrator before implementation.
+    - It needs no shared query change: the 22d neutrality rule holds.
+    - Every lookup by path keeps an index scan.
+    - The one ordering the btree served now sorts the handful of rows found.
+    - A hash index holds no nulls and cannot be unique. `IX_BaseItems_Path` is neither unique nor filtered, and no query asks for a null path.
+  - **How it is built.**
+    - `PathHashIndexConvention` in the PostgreSQL provider sets the method on the shared index. It fails when the model has no index on `Path` alone.
+    - `NullsFirstIndexConvention` skips any index that is not a btree, because PostgreSQL refuses ordering options there.
+    - The paired migration `20261016043615_IndexItemPathByHash` drops and recreates the index on PostgreSQL. SQLite and MySQL carry the id with no operations, because the 22b pairing rule requires the id on every provider. Their snapshots are unchanged, and four `EngineSpecific` entries in the 22c allowlist record the PostgreSQL operations.
+    - Down restores the btree. It fails while an item has a path that a btree entry cannot hold.
+    - The upgrade runs at startup, before clients connect. It holds `BaseItems` while the index builds: 0.16-0.18 s for 300,001 rows measured warm, and an estimated 2-20 s per million rows cold. `CONCURRENTLY` is not worth it, and the PostgreSQL how-to notes the cost.
+  - **The pin is gone.** The known gap `PG-PATH-INDEX-KEY` and its matcher tests are removed. The long-`Path` kit row passes on all four engines, and a new kit row saves a 10,000-byte path and finds it by path.
+  - **MySQL and MariaDB match L6** (documentation only, measured at the base on MySQL 8.4.11 and MariaDB 11.4.13).
+    - `SHOW INDEX` gives `IX_BaseItems_Path` an explicit `Sub_part` of 512 and `Index_type` `BTREE`, and no index of the five text-class tables is `HASH`.
+    - 909, 3024 and 10,000 characters each saved 50 of 50 in one batch and were found by equality.
+    - Tests pin it. Offline, `MySqlModelTests.PathIndex_IndexesAPrefixOf512Characters` asserts the 512 prefix-length annotation on `IX_BaseItems_Path` for every MySQL and MariaDB row of the provider table. On a server, `MySqlBaselineSchemaTests.MigratedDatabase_IndexesTextOnlyByThePrefixTheConventionChose` reads `SUB_PART` from `information_schema.STATISTICS`, the source of `SHOW INDEX`, compares every index with the model, and now also asserts 512 for the path. `MigratedSchema_MatchesTheSchemaOfTheModel` compares `INDEX_TYPE`. L2's test therefore exists, through `information_schema` rather than `SHOW INDEX`. Correction: the first round of X12 said that no test checks `SHOW INDEX`, and the follow-up request for a pin rested on that. It was wrong. The server coverage already existed through `information_schema.STATISTICS`, and X12 adds only the explicit 512 assertion and the offline theory.
+- **L9. The other text-class indexes keep the 2704-byte exposure on PostgreSQL. It is recorded, not fixed.**
+  - **Single-column indexes:** `IX_BaseItems_Name`, `IX_BaseItems_PresentationUniqueKey`, `IX_BaseItems_SeriesName`, `IX_Peoples_Name` and `IX_Peoples_NameLower`.
+    - Unlike `Path`, these columns are also ordered or grouped. `Name` is a tie-breaker in `ORDER BY` (`BaseItemRepository.QueryBuilding.cs:363`), `PresentationUniqueKey` and `SeriesName` are grouped (`QueryBuilding.cs:108`, `ByName.cs:248,258`, and the "Latest TV: GROUP BY SeriesName" index), and `NameLower` is ordered (`PeopleRepository.cs:56`).
+    - A hash index cannot serve those, so each needs its own plan measurement before a method change.
+  - **Composite indexes** containing `SortName`, `PresentationUniqueKey`, `SeriesPresentationUniqueKey`, `CleanName`, `ProviderValue` or `Language` cannot be hash indexes: a hash index has one column.
+  - **`ItemValues.CleanValue`** is safe, because `Value` is bounded at 512 characters (L1).
+  - **The cost of a failure.** The same `54000` would refuse the item, and X11 limits it to that item.
+  - **Plausibility.** Titles and names compress well, so a failure needs more than 2704 bytes after compression. The most plausible case is a `PresentationUniqueKey` of a series without provider ids: it grows by 33 bytes of random hex per library that holds the series.
+  - **Recommendation: a follow-up.**
+    - Measure the ordered and grouped plans of the single-column indexes with btree and with hash, and move to hash those that keep their plans.
+    - Record the composites as a named PostgreSQL known gap, with a kit row that pins one realistic over-limit key.

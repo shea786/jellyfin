@@ -215,6 +215,7 @@ The user changed the delivery strategy. This supersedes "small, stacked, indepen
 | X7 (ours) | on `feature/multi-db`: fork `68ea0d1249`, merged by `0f118c6b7c` with a green post-merge proof (B22); plus the upstream-shaped `837cf78032` (`fix/hls-extinf-invariant-culture`) on `aec42b345e`; whether it ships inside the single PR or separately is decided at submission time | `SubtitleController.GetSubtitlePlaylist` appended `TimeSpan.TotalSeconds` with the current culture, so fr-FR gave `#EXTINF:4,5,` | Invariant formatting with a failing-first fr-FR test; can be offered upstream on its own |
 | X8 (ours) | on `feature/multi-db`: fork `96b3b718a9`, merged by `5d8b85e832` with a green post-merge proof (B22); plus the upstream-shaped `34dc00973a` (`fix/vtt-timestamp-map-header-only`) on `aec42b345e`; whether it ships inside the single PR or separately is decided at submission time | `SubtitleController.GetSubtitle` replaced every `WEBVTT`, splitting cue text and header text with the timestamp map | Map only after the whole first line, with whole-output tests; can be offered upstream on its own |
 | X10 (ours) | on `feature/multi-db`: fork `939887782c` (`multidb/x10-merge-candidate`) on `3d0ab14734`, fast-forwarded into `feature/multi-db` by the orchestrator (B29); plus the upstream-shaped `2084aa42b2` (`fix/backup-home-sections`) on `aec42b345e`; whether it ships inside the single PR or separately is decided at submission time | `HomeSection` had no `DbSet`, so a backup did not carry it and a restore did not give the home-screen sections back on any engine (22d finding F1) | A singular `DbSet`, and on upstream a restore that keeps archive keys and reads them before the purge; can be offered upstream on its own |
+| X12 (ours) | fork-only, `multidb/x12-pg-path-key` on `93c7ffec57`: a code commit and a docs commit; review and merge by the orchestrator (B36). PostgreSQL is in the upstream series, so at the replay it folds into steps 14 and 15 instead of shipping as a migration | On PostgreSQL an item whose `Path` a btree index entry cannot hold (2704 bytes) never saved, while SQLite saved it (ADR-0009 G1) | `IX_BaseItems_Path` becomes a hash index through a PostgreSQL convention; no shared model or query change (ADR-0009 L8) |
 | #18381 | open | Rewrites the `recentCutoff` line in `GetLatestTvShowItems` | Would reintroduce the X3 throw if it lands without X3; rebase X3 or ask for the null check there |
 | #18423 | open | Adds `BaseItemRepositoryLatestItemListTests.cs` | A reviewer may want X3's tests moved into it |
 | #17879, #17878 | #17879 MERGED upstream on 2026-10-13 (`619eb231b4`, upstream/master `e53a6d3e6a`), merged into the fork by the 2026-10-15 sync (B18); #17878 (dotnet-ef 10.0.13) open at the 2026-10-15 scan | #17879 moved the Microsoft pins to 10.0.12, Test.Sdk to 18.11.0 and System.Text.Json to 10.0.13, a superset of step 23 | Drop step 23 when `multidb/upstream` is built. The replay of the later steps must not touch those pins. Step 23 left the dotnet-ef tool at 10.0.11; step 22b (`d4d55bcada`) moved the fork's tool to 10.0.12, which the sync keeps (upstream's tool is still 10.0.11). |
@@ -950,3 +951,34 @@ The user changed the delivery strategy. This supersedes "small, stacked, indepen
   - **PostgreSQL's pin.** X11's long-`Path` kit row pins ADR-0009 G1 as the known gap `PG-PATH-INDEX-KEY`, asserting `54000`. That is the pinning test of ADR-0009 L7, and X12 removes the gap (B34).
   - **Follow-up note.** When a file changes type, the scan deletes the stale item at its path before `CreateItems` (`Folder.cs`, the type-change branch). So a replacement that the database refuses still leaves that path empty until a scan saves it. The base behaves the same, and X11 does not change it.
   - **Wording.** The S9 rows for X1 to X3, X6 to X8 and X10, and S10, now say where each fix lives: on `feature/multi-db`, plus its upstream-shaped branch. They also say that whether it ships inside the single PR or separately is decided at submission time. The historical amendments are unchanged.
+
+## Amendments (X12, 2026-10-16)
+
+- **B36. X12 is done: `IX_BaseItems_Path` is a hash index on PostgreSQL.** The details are in ADR-0009 L8 and L9, ADR-0012 T6 and [the X12 explainer](explainers/x12-pg-path-hash-index.md).
+  - **Decision.** The orchestrator approved the hash index (h1) over an `md5` expression index (h2) after receiving the query-shape inventory and the measured comparison. h2 would need a shared query rewrite or an interceptor. A `hashtext` variant was rejected unmeasured, because `hashtext` is internal and undocumented.
+  - **Branch.** `multidb/x12-pg-path-key`, cut from `93c7ffec57`, in two commits:
+    - *Index item paths with a hash index on PostgreSQL*: the convention, the null-order convention's skip of non-btree indexes, the paired migration `20261016043615_IndexItemPathByHash`, four `EngineSpecific` allowlist entries, the removal of `PG-PATH-INDEX-KEY`, the MySQL prefix pins, and the tests;
+    - a docs commit, which also adds the upgrade note to the PostgreSQL how-to.
+    - The first round, before the independent review's fixes, is `multidb/x12-pg-path-key-backup-a` (`bbe7c929d9`, `3318c797f0`).
+  - **Migration shape, approved.**
+    - PostgreSQL drops and recreates the index.
+    - SQLite and MySQL carry the id with no operations, and a one-line comment, because the 22b pairing rule requires every id on every provider.
+    - The SQLite and MySQL snapshots are byte-identical to the base; the PostgreSQL snapshot changes only the index method.
+  - **Replay (B31).** PostgreSQL ships in the upstream series, so X12 is a candidate to fold into it:
+    - the convention goes into step 14 (`NullsFirstIndexConvention` with its non-btree skip);
+    - step 15's regenerated PostgreSQL baseline then creates `IX_BaseItems_Path USING hash` from the start;
+    - `20261016043615_IndexItemPathByHash` (all three providers) and its four allowlist entries are dropped from the series, together with this commit's migration tests. The kit rows, `PostgresPathIndexTests` and the convention test move with the convention.
+    - The fork keeps the paired migration until then, because existing fork databases need it.
+  - **Red first** (`/tmp/x12/red2/legs/`):
+    - (a) and (d): at the base with the kit rows of the fix and no marker, PostgreSQL fails both long-path rows with `54000`, and the other engines pass;
+    - (b): the fix with the marker put back fails on PostgreSQL with "remove the KnownGap marker";
+    - (c): the fix passes on all four engines;
+    - removing one allowlist entry makes the contents check report one missing entry, and restoring it passes;
+    - (f): with the MySQL prefix limit at 511, the offline prefix pin fails on all five MySQL and MariaDB rows with "Expected: [512] Actual: [511]", and passes again with the reverse patch applied.
+  - **Gates** (`/tmp/x12/gates2/`, each run finished with `COMPLETE`, 12G cap):
+    - per commit, for the code commit and the first docs commit: Release 0/0, format and render check returning 0, and the targeted tests green on all four engines;
+    - Debug of the base and both commits: 0 errors and the same 211 warnings;
+    - the tip proof on `c24fd58c40`: the full suites on all four engines plus Controller.Tests, with 12,461 TRX rows (11,774 passed, 687 skipped, 0 failed), every sentinel passing, nothing left in Docker, and a clean identity at both ends.
+    - The docs commit was then amended to quote these results, with docs-only changes. The numbers are in the explainer.
+  - **MySQL and MariaDB** match ADR-0009 L6: `Sub_part` 512, `BTREE`, and 909, 3024 and 10,000 characters all saved. An offline test pins the 512 prefix on `IX_BaseItems_Path` for every MySQL and MariaDB row of the provider table, red with the limit at 511. The existing server test that reads `SUB_PART` from `information_schema.STATISTICS` now asserts 512 for the path as well. Correction: X12's first round said that no test checks `SHOW INDEX`; that was wrong, because that server test already compared every prefix with the model.
+  - **Follow-up.** The other text-class indexes keep their PostgreSQL exposure (ADR-0009 L9). The recommended follow-up measures hash for the single-column ones and records the composites as a named gap.

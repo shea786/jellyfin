@@ -240,3 +240,10 @@ Two kinds of option are weighed. The storage and index options decide when a key
     - **SQLite.** The fork's SQLite provider counts every primary-key and unique violation as a write conflict. So on the fork a unique violation that comes from an item's own data never reaches the fallback either, and it stays all or nothing, as before.
   - **Nothing saved.** If no item could be saved at all, the batch's exception is also thrown again.
 - **T5. Decision 8's pin now exists.** X11's conformance-kit row `BatchSaveConformance.SaveItemsSkippingFailures_OneItemWithAPathOverTheIndexKeyLimit_SavesEveryItem` pins the PostgreSQL gap as the known gap `PG-PATH-INDEX-KEY`, asserting `54000` on `IX_BaseItems_Path` (ADR-0009 L7). X12 removes it.
+
+## Amendments (X12, 2026-10-16)
+
+- **T6. Decision 8 is closed for `Path`.**
+  - On PostgreSQL, `IX_BaseItems_Path` is a hash index (ADR-0009 L8), so an item whose path a btree entry cannot hold now saves. The known gap `PG-PATH-INDEX-KEY` is removed.
+  - This is not option (b) for SQL Server. A PostgreSQL hash index has no key-size limit and needs no query rewrite, whereas SQL Server's (b) needs a computed column and a provider interceptor.
+  - The new 10,000-byte kit row also exceeds SQL Server's `nvarchar(4000)`, so step 27 marks it with the SQL Server gap `ADR-0009/G2` together with the 3000-character row.
