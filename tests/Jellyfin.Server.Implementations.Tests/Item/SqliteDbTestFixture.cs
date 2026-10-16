@@ -30,6 +30,7 @@ public abstract class SqliteDbTestFixture : IDisposable
     protected SqliteDbTestFixture(params IInterceptor[] interceptors)
     {
         ApplicationPaths = new Mock<IApplicationPaths>().Object;
+        DatabaseProvider = new SqliteDatabaseProvider(ApplicationPaths, NullLogger<SqliteDatabaseProvider>.Instance);
 
         _connection = new SqliteConnection("Data Source=:memory:");
         _connection.Open();
@@ -44,6 +45,8 @@ public abstract class SqliteDbTestFixture : IDisposable
     }
 
     protected IApplicationPaths ApplicationPaths { get; }
+
+    protected IJellyfinDatabaseProvider DatabaseProvider { get; }
 
     public void Dispose()
     {
