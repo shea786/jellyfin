@@ -778,7 +778,10 @@ The user changed the delivery strategy. This supersedes "small, stacked, indepen
     - **Gates.** Every commit: Release 0/0, Debug 0 errors with 211 warnings (the base's set, unchanged), and the exact format command. Debug caught a CA2213 that Release did not.
   - **Results.**
     - **The stub on SQL Server 2022 CU27** (16.0.4295.3): Implementations 2464 passed, 86 failed, 144 skipped; Server 126 / 9 / 30; Integration 140 / 0 / 8. The server starts, migrates a throwaway baseline and serves every integration test.
-    - **The same stub on 2025 CU9 + GDR** (17.0.5015.4) agrees test for test, except for an order-dependent EF warning (explainer).
+    - **The stub on 2025 CU9 + GDR** (17.0.5015.4), at `a9f63bf1e1`, is the same stub plus 7 probe tests: 85 failures (86 − 4 + 2 + 1).
+      - The order-dependent `ManyServiceProvidersCreatedWarning` moved from four tests to two.
+      - One probe, `Sessions_*`, failed with its own catalog-collation conflict, identically on 2022. It was fixed in `c0b4bcc44b`.
+      - No behavioural difference between 2022 and 2025 was found (explainer).
     - **With the hooks** (`c0b4bcc44b`):
       - **2022:** Implementations 2544 / 5 / 156; Server 126 / 0 / 39; Integration 140 / 0 / 8.
       - **2025:** 2539 / 10 / 156; 126 / 0 / 39; 140 / 0 / 8.
@@ -786,13 +789,13 @@ The user changed the delivery strategy. This supersedes "small, stacked, indepen
       - **The rest** is EF's process-wide `ManyServiceProvidersCreatedWarning`, which lands on different tests from run to run; its cause is open (explainer).
     - **The four existing engines at `c0b4bcc44b`:** 12 legs, 12,123 rows; 11,482 passed, 641 skipped, 0 failed; every sentinel passed. The stub does not regress SQLite, PostgreSQL, MySQL or MariaDB.
     - **Model creation without the conventions** gives Msg 1785 (both cascades), Msg 156 (the OR filter) and Msg 1919 (`nvarchar(max)` in a key), the same on both versions.
-  - **The checklist in brief** (30 items):
+  - **The checklist in brief** (31 items):
     - **Works:** Guid order and lists; `QUOTED_IDENTIFIER`; unique NULLs (M6); `LIKE` with `[`; DateTime range in `datetime2(7)`; 2100 parameters (EF falls back to one `OPENJSON` parameter; 100,000 ids pass); reseed with the `last_value` rule; transactional DDL; DatePlayed and `MAX` over a union; raw SQL in shared code; session defaults.
     - **Needs a convention:** `NoAction` cascades (M5); the OR filter (M3); `nvarchar(4000)` for the text class; `nvarchar(max)` for bounded text outside keys and indexes.
     - **Needs a hook:** `IDENTITY_INSERT`; the retry classifier; `LikeIgnoreAsciiCase` through `TRANSLATE`; a READ COMMITTED connection, because pooled connections keep their level; and a `datetime2` constant for `DATEADD`, because EF's untyped literal is `datetime` and year 1 fails the PremiereDate sort (Msg 517).
     - **Known gaps:** ADR-0006 G1 and G2, neither of which any suite test covers yet; `ADR-0009/G2` (ADR-0012); the sort-name range filters with a non-ASCII term (MySQL's lists, exactly).
     - **Test side:** `COUNT(*)` read as `long`; bracket quoting in a failed-write interceptor; the overlong-key seeds; the model-shape allowance; EF's process-wide service-provider warning.
-    - **No shared-code issue was found.**
+    - **One shared-code issue: the batch.** A folder's new items are saved in one transaction (`ItemPersistenceService.SaveItemTuples`). One over-long row saves none of them, and the scan then skips that folder's subfolders, on every pass. Measured: 0 of 50 saved on SQL Server, PostgreSQL (ADR-0009 G1, a Supported engine) and SQLite (a trigger raising an error); 50 of 50 on MySQL. ADR-0012 weighs the remedies; X11 below is the proposed one.
   - **Corrections to record in step 27:**
     - **ADR-0007 G1.** `MIN` over `uniqueidentifier` exists on 2022 CU27 and 2025; its order is the problem, and `binary(16)` stays.
     - **ADR-0008 R3.** On SQL Server, as on MySQL (S5), the provider must start transactions at READ COMMITTED itself.
@@ -803,7 +806,8 @@ The user changed the delivery strategy. This supersedes "small, stacked, indepen
       - `Microsoft.EntityFrameworkCore.SqlServer` at the EF version, and `Testcontainers.MsSql` 4.16.0, both central.
       - Pin `System.Security.Cryptography.Pkcs` 10.0.13, because SqlClient 6.1.6 brings 9.0.11, flagged NU1902 and NU1903.
       - Review SqlClient's Azure dependency tree as ADR-0011 R1 did for MySQL.
-      - Test image `mcr.microsoft.com/mssql/server:2022-CU27-ubuntu-22.04`, pinned by digest (`sha256:4402d880…a090` on MCR, 2026-10-16).
+      - Its reviewer runs `dotnet list package --vulnerable --include-transitive` at the tip. The spike's run at its own tip is clean (`evidence/vulnerable-packages-tip.txt`).
+      - Test image `mcr.microsoft.com/mssql/server:2022-CU27-GDR1-ubuntu-22.04`, the security update of CU27 and the tag `2022-latest` points at. Its digest, `sha256:cf8f0ab2ebe61feec2eed2629061a07d247f791c2a8ddda74a4ac9f06a291718`, was read from MCR on 2026-10-16. The spike ran on the pre-GDR `2022-CU27-ubuntu-22.04` (`sha256:4402d880…a090`), so step 27 runs the suite on the GDR image before pinning it.
     - **Conventions, each with a model test.**
       - `binary(16)` Guids through `ToByteArray(bigEndian: true)` (ADR-0007 P2).
       - `Latin1_General_100_BIN2` on every column stored as text, chosen by store type as C8 does. The history repository gets BIN2 too. There is a startup check of the database default collation, which warns, and no `ALTER DATABASE … COLLATE` in the baseline.
@@ -816,7 +820,11 @@ The user changed the delivery strategy. This supersedes "small, stacked, indepen
       - **Retry classifier.** `IsRetryableWriteConflict` with 2627, 2601, 1205, 1222 and 3960; 547, 2628, 8152 and 1946 are not retryable.
       - **Explicit identities.** `BeginExplicitIdentityInsertAsync` with `SET IDENTITY_INSERT` per table, on the open connection.
       - **Purge.** Constraints off, `DELETE`, `WITH CHECK CHECK CONSTRAINT ALL`, then `RESEED 0` only where `last_value IS NOT NULL`, inside and outside a transaction.
-      - **Isolation.** `ReadCommittedConnection`, which replaces `ISqlServerConnection` (EF1001, as MySQL's replaces `IMySqlRelationalConnection`) and turns an unnamed level into READ COMMITTED. SqlClient keeps a pooled connection's level: measured with SERIALIZABLE on both versions. Also the RCSI warning at `Initialise` (ADR-0008 R3).
+      - **Isolation.** SqlClient keeps a pooled connection's level: measured with SERIALIZABLE on both versions.
+        - `ReadCommittedConnection`, which replaces `ISqlServerConnection` (EF1001, as MySQL's replaces `IMySqlRelationalConnection`), turns an unnamed level into READ COMMITTED. That covers EF's transactions and saves only: a statement outside a transaction on a reused connection still ran SERIALIZABLE (`probes-c3-*`).
+        - The provider therefore also sets READ COMMITTED when a connection opens, as the MySQL session interceptor does.
+        - The RCSI warning at `Initialise` (ADR-0008 R3), and the ADR-0008 amendment that records the leak and both remedies.
+      - **Startup checks** that read `sys.databases` or `DATABASEPROPERTYEX` read single scalars, or apply `COLLATE DATABASE_DEFAULT` when they combine or compare catalog string columns. A `CONCAT` over `sys.databases` columns failed with a collation conflict in the spike's own probe.
       - **`LikeIgnoreAsciiCase`.** Translated as `TRANSLATE(value, 'A…Z', 'a…z') LIKE pattern ESCAPE '\'` (R13).
       - **`DATEADD` over a constant.** An `IMethodCallTranslatorPlugin`, added through an options extension with scoped lifetime, so that `DateTime.AddYears` on a constant uses a `datetime2` literal. Check the other `DATEADD` members the same way.
       - **Compatibility level.** EF assumes 150; pin it explicitly, and run the suite at 160 before choosing it.
@@ -846,7 +854,7 @@ The user changed the delivery strategy. This supersedes "small, stacked, indepen
       | OR filter | Model test of the three kept filters and the one dropped (Msg 156 without it) |
       | `QUOTED_IDENTIFIER` | Session test, `quoted_identifier = 1` |
       | Unique NULLs | M6 model test of the `[UserId] IS NOT NULL` filter |
-      | Text keys | ADR-0012 tests 1 to 4 |
+      | Text keys | ADR-0012 tests 1, 2, 5 and, if (b) is taken, 6 |
       | Unindexed text | `TextColumnLengthTests` (Msg 2628 on the stub) |
       | Guid order | ADR-0007 test 1 and a store-type test of every Guid column |
       | `LikeIgnoreAsciiCase` | `LikeIgnoreAsciiCaseBehaviourTests`, the Like kit rows, `BaseItemRepositorySortNameFilterTests` (26 red on the stub) |
@@ -856,11 +864,29 @@ The user changed the delivery strategy. This supersedes "small, stacked, indepen
       | `DATEADD` literal | `BaseItemRepositoryPremiereDateOrderTests` with year 1 (Msg 517 on the stub) |
       | Identity insert | `BackupServiceTests` and the Restore kit rows (Msg 544 on the stub) |
       | Reseed | A test that a never-used table's first id after the purge is 1 (0 with an unconditional `RESEED 0`) |
-      | Isolation | Leave a pooled connection at SERIALIZABLE, then assert that an EF transaction and a save run at READ COMMITTED; the RCSI warning with RCSI off |
+      | Isolation | Leave a pooled connection at SERIALIZABLE, then assert that an EF transaction, a save **and an untransacted EF query** on the reused connection run at READ COMMITTED (the session's `transaction_isolation_level` read inside the same command batch); the RCSI warning with RCSI off |
+      | Batch save | ADR-0012 test 3: N new children of one folder, one over-long; the behaviour pinned per engine |
+      | Restore | ADR-0012 test 4, red first: a restore that meets an over-long row rolls back as a whole |
       | Retry | The WriteConflict kit rows, and classifier unit tests with real `SqlException`s of the measured numbers |
       | 2100 parameters | The IdList kit rows (already green) |
       | Collation | Every text column BIN2, in the model and in the migrated schema; a database with another default gives the warning |
       | Compatibility level | The options name the pinned level |
+  - **Coordinator decisions for step 27.**
+    - **First item, before any hazard work.** Root-cause the order-dependent `ManyServiceProvidersCreatedWarning`. A test-only suppression is acceptable only once the cause is understood and shown harmless.
+    - **Isolation.** SQL Server gets the READ COMMITTED connection fix, including the reset for statements outside a transaction, and the ADR-0008 amendment.
+    - **CI.** An advisory 2025 job alongside the 2022 job; neither is required.
+    - **Restore.** The claim that a restore rolls back as a whole becomes a red test in step 27, not later.
+  - **X11 (proposed), save item by item after a failed batch** (ADR-0012 option (S)).
+    - **Shape.** An independent unit cut from `upstream/master`, like the other X rows: `fix/save-items-per-item-fallback`. It is not part of the SQL Server steps, and it is reviewed on its own.
+    - **The change.** When `ItemPersistenceService.SaveItems` fails on a batch of more than one item with an error that is not a retryable write conflict, it saves the items one at a time, each in its own transaction, in list order. It skips an item whose primary or owner failed, logs each skipped item at Error with its id, path and exception, and rethrows if the first per-item saves fail alike.
+    - **Failing-first tests on every engine**, with a deliberately failing row:
+      - SQLite and MySQL/MariaDB: a trigger;
+      - PostgreSQL: a path over 2704 bytes (`54000`), or a trigger;
+      - SQL Server: once it is registered.
+
+      Each asserts that the other items are saved, the failing one is logged, and a connection-level error is not retried per item. A scan-level test asserts that the folder's subfolders are still validated.
+    - **Order.** It is independent of steps 27 and 28. It should be merged into `feature/multi-db` before SQL Server is registered (step 28). If it is not accepted, step 27 takes ADR-0012 (b) for `Path` and (i) instead.
+    - **Upstream.** It is a candidate for the upstream series. It changes no query and no schema, and it removes a folder-wide failure that PostgreSQL, a Supported engine, already has.
   - **Brief for step 28** (`multidb/28-sqlserver-migrations-and-registration`).
     - **Baseline.** `20200101000000_InitialCreate`, generated with the one command (W1, W3) from a fixed design-time factory.
       - It holds the 18 indexes over 1700 bytes; their Msg 1945 warnings are expected (ADR-0012).
@@ -869,6 +895,6 @@ The user changed the delivery strategy. This supersedes "small, stacked, indepen
     - **Registration.** `Jellyfin-SqlServer` in `DatabaseProviderTypes()`, with the Experimental warning (M1).
     - **Migration tests (a) to (c)**, the 22c contents check with SQL Server's allowlist entries, and the failing-migration test. DDL is transactional, so `SupportsTransactionalMigrations` stays `true` and no marker is needed.
   - **Step 29.**
-    - **Floor entry.** A `SqlServer` entry on 2022 CU27, pinned by digest and not required (ADR-0010 CI3).
-    - **Proposed: an advisory entry** for `2025-CU9-GDR1-ubuntu-24.04` (`sha256:742481d1b1186cccc81220a1eaacef244ca8d0f7d19c8e5c70df8ae541ffbab2`), as MySQL 9.7.2 and MariaDB 12.3.3 are. Its failure would not fail the run. 2025 is GA with mainstream support to 2031; the spike found no behavioural difference; and new databases at compatibility level 170 are where a later EF default would first differ.
-    - The how-to states ADR-0012's thresholds.
+    - **Floor entry.** A `SqlServer` entry on 2022 CU27 GDR1, pinned by digest and not required (ADR-0010 CI3).
+    - **An advisory entry**, decided by the coordinator, for `2025-CU9-GDR1-ubuntu-24.04` (`sha256:742481d1b1186cccc81220a1eaacef244ca8d0f7d19c8e5c70df8ae541ffbab2`), as MySQL 9.7.2 and MariaDB 12.3.3 are. Its failure would not fail the run. 2025 is GA with mainstream support to 2031; the spike found no behavioural difference; and new databases at compatibility level 170 are where a later EF default would first differ.
+    - **The how-to** says plainly that an item whose path is longer than about 850 characters is not saved on SQL Server, and what that does to the rest of its folder (ADR-0012, decision 7).

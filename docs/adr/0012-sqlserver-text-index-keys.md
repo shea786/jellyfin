@@ -42,90 +42,123 @@
 | `IX_BaseItems_Type_TopParentId_IsVirtualItem_PresentationUniqueKey_DateCreated` | `PresentationUniqueKey` | 8537 | 581 | 792 |
 | `IX_BaseItems_Type_SeriesPresentationUniqueKey_PresentationUniqueKey_SortName` | `SeriesPresentationUniqueKey`, `PresentationUniqueKey`, `SortName` (shared) | 24512 | 594 | 805 |
 
-  Declared bytes are as SQL Server reports them (Msg 1945). The room is `(1700 − the other key columns) / 2`; a nonclustered index of a non-unique key also carries the clustered key, which does not count against the 1700 bytes. The table is `/tmp/sqlserver-spike/evidence/adr0012-index-table.tsv`.
+  Declared bytes are the ones SQL Server reports in its Msg 1945 warnings (`adr0012-create-warnings-*.txt`). The computed table `/tmp/sqlserver-spike/evidence/adr0012-index-table.tsv` counts a `bit` as one byte and gives 8026 and 8514 for the two indexes with two `bit` columns, where the server reports 8025 and 8513. The room is `(1700 − the other key columns) / 2`. A nonclustered index of a non-unique key also carries the clustered key, which does not count against the 1700 bytes.
 - **Where the values come from.**
-  - `Path` is a file path. Linux allows 4096 bytes, so an 851-unit path is possible, though rare.
-  - `PresentationUniqueKey` is an id in 32 hex characters for most items. A series uses `series-<name>-<language>` plus 33 characters for each library that holds it (`Series.cs:79-119`), a season adds `-NNN`, and people, studios, genres and artists use `Type-<name>`.
-  - `SortName` and `Name` are titles; `CleanName` and `CleanValue` are titles and values after cleaning; `ItemValues.Value` is already bounded at 512 (ADR-0009 L1), so `CleanValue` stays well under 848.
+  - **`Path`** is a file path. Linux allows 4096 bytes, so an 851-unit path is possible: a deep NAS path with long folder and file names is the realistic first case.
+  - **`PresentationUniqueKey`** is an id in 32 hex characters for most items. A series with at least two user-data keys (a provider id) uses the first of them. Only a series without one uses `series-<lowercased name>` (`Series.cs:87-89`), and that is the long form. Either form gets `-<language>` and 33 characters for each library that holds it (`Series.cs:100-119`). A season adds `-NNN`; people, studios, genres and artists use `Type-<name>`.
+  - **`SortName` and `Name`** are titles. `CleanName` and `CleanValue` are titles and values after cleaning. `ItemValues.Value` is already bounded at 512 (ADR-0009 L1), so `CleanValue` stays well under 848.
 - **How the columns are queried** (shared code at `feature/multi-db`).
   - `Path`, `PresentationUniqueKey`, `SeriesPresentationUniqueKey`, `CleanName`, `Name` and `Peoples.Name` are only compared for equality or membership. Examples: `TranslateQuery.cs:330,335,482,1136`, `ItemPersistenceService.cs:612,698`, `NextUpService.cs:96-284`, the correlated `OrderMapper.cs:82,86` and `PeopleRepository.cs:439`.
   - `SortName` also needs order: `ORDER BY` (`QueryBuilding.cs:378`, `OrderMapper.cs`), the range filters (`QueryBuilding.cs:239,246`) and a LIKE prefix (`QueryBuilding.cs:232`).
-- **What a failure costs.**
-  - **A save fails loudly.** The item's whole `SaveChanges` is rejected with Msg 1946 and the exception names the index. During a scan that item is missing from the library, and the scan logs the error. No other row is affected, and nothing is truncated silently.
-  - **A restore is expected to roll back.** DDL and DML are transactional on SQL Server (measured: a `CREATE TABLE` inside a rolled-back transaction is gone). The restore runs in one transaction (ADR-0003 S2), so a restore that meets such a row should roll back as a whole. Test 3 below pins this; the spike did not run it.
-- **The other engines.** PostgreSQL fails above 2704 bytes (ADR-0009 G1). MySQL and MariaDB index a prefix and never fail on length (ADR-0009 L6). SQL Server is the tightest of the four.
-- **Tier.** SQL Server is Experimental and fork-only (ADR-0011). ADR-0009 L2's invariant, that every row SQLite accepts can be restored on every *Supported* engine, does not bind it. ADR-0011 already lists keys over 1700 bytes as a known gap (`ADR-0009/G2`). This ADR decides whether to keep that gap or close it.
+- **What a failure costs: a whole folder, not one row.**
+  - **The save is a batch.** A folder's scan collects every new child and calls `LibraryManager.CreateItems` once (`Folder.cs:467-610`). `UpdateItemsAsync` batches the same way (`LibraryManager.cs:2716`). Both go to `ItemPersistenceService.SaveItems`, which saves the whole batch in one transaction (`SaveItemTuples`, `ItemPersistenceService.cs:369-371`, committed at `:825-826`). One over-long row rolls back the save of every item in it.
+  - **The scan skips the rest of that folder.** Nothing in `Folder.ValidateChildrenInternal2` catches the exception. The folder's validation stops at `CreateItems` (`Folder.cs:609`), before its subfolders are validated (`:770`) and its children's metadata is refreshed (`:809`). `LimitedConcurrencyLibraryScheduler.ProcessItem` logs *"Error while performing a library operation"* and goes on with the sibling folders (`LimitedConcurrencyLibraryScheduler.cs:254-274`).
+  - **It never heals.** The next scan does the same, so the other new items of that folder, and the new content of its existing subfolders, never appear while the long item is there. If that folder is a library root with files at its top level, the whole library stops gaining items.
+  - **Measured, through the real `SaveItems`** (`evidence/batch-save/`, a scratch test that is not committed). 50 new movies, one of them with an over-long `Path`, in one call:
+    - **SQL Server 2022:** Msg 1946 (*"index entry of length 1818 bytes for the index 'IX_BaseItems_Path'"*), 0 of 50 saved.
+    - **PostgreSQL 16.15**, a Supported engine (3000 random characters): `54000` *"index row size 3024 exceeds btree version 4 maximum 2704 for index "IX_BaseItems_Path""*, 0 of 50 saved.
+    - **SQLite**, with a trigger that raises an error for a path over 850 characters: 0 of 50 saved.
+    - **MySQL 8.4** (prefix index): 50 of 50 saved.
+
+    So the batch effect is not particular to SQL Server. It applies to any error of one row on any engine, and today it applies to ADR-0009 G1 on PostgreSQL.
+  - **A restore is expected to roll back as a whole.** DDL and DML are transactional on SQL Server (measured: a `CREATE TABLE` inside a rolled-back transaction is gone). The restore runs in one transaction (ADR-0003 S2), so a restore that meets such a row should roll back as a whole. Step 27 pins this with a red test; the spike did not run it.
+  - **No silent truncation.** It holds with `ANSI_WARNINGS ON`, which every measured session had (probe `Sessions_*`). With `ANSI_WARNINGS OFF`, the server cuts a value at the column bound silently (measured: 851 units became 850).
+- **The other engines.** PostgreSQL fails above 2704 bytes (ADR-0009 G1), with the same batch effect. MySQL and MariaDB index a prefix and never fail on length (ADR-0009 L6). SQL Server is the tightest of the four.
+- **Tier.** SQL Server is Experimental and fork-only (ADR-0011). ADR-0009 L2's invariant, that every row SQLite accepts can be restored on every *Supported* engine, does not bind it. ADR-0011 already lists keys over 1700 bytes as a known gap (`ADR-0009/G2`). This ADR decides how SQL Server stores and indexes the text-class columns, and what limits the damage when a key is too long.
 
 ## Options considered
 
-- **(a) Keep `nvarchar(4000)` and accept the runtime failure.** The text-class columns stay as ADR-0009 L3 has them. A row whose actual key exceeds 1700 bytes fails with Msg 1946, as measured above.
-  - **Thresholds.** 850 code units for a single column; 792 to 805 units for the `BaseItems` composites at realistic values; 714 for `ProviderValue` with `ProviderId` at its bound of 128; 425 supplementary characters.
-  - **Changes nothing.** Shared code, migrations on other engines and the model shape are unchanged.
-- **(b) A persisted computed hash, indexed instead of the text.** For example `PathHash AS CAST(HASHBYTES('SHA2_256', [Path]) AS binary(32)) PERSISTED`, with the index on `PathHash`.
-  - **Measured.** A 4000-unit value gives a 32-byte key and is accepted.
-  - **CHECKSUM is unsuitable.** It is 4 bytes, collision-prone, and under BIN2 it ignores trailing spaces: `abc` and `abc␠` give the same value, `ABC` a different one.
-  - **Query rewrite.** Each equality and membership predicate must compare the hash as well as the text, or the index is not used. The column is a SQL Server-only shadow property. The rewrite would live in a provider `IQueryExpressionInterceptor`, the mechanism the MySQL provider already uses (ADR-0011 F2, F7), with a provider-translated hash function over the parameter; a list goes through the same `OPENJSON` the provider already sends.
-  - **Side effect.** Hash plus text equality would also make those predicates exact under trailing spaces, which narrows ADR-0006 G1.
-  - **Does not serve `SortName`.** It needs order and a prefix.
-  - **Cost.** A model shape that differs from SQLite (an allowance in the kit), a provider interceptor per predicate shape, and the baseline's extra columns. ADR-0009 L4 rejected the shared form of this.
+Two kinds of option are weighed. The storage and index options decide when a key is too long. The blast-radius options decide what an over-long key costs.
+
+- **(a) Keep `nvarchar(4000)` and accept the runtime failure.** The text-class columns stay as ADR-0009 L3 has them, and a row whose actual key exceeds 1700 bytes fails with Msg 1946.
+  - **Thresholds.** 850 code units for a single column; 792 to 805 for the `BaseItems` composites at realistic values; 714 for `ProviderValue` with `ProviderId` at its bound of 128; 425 supplementary characters.
+  - **Cost.** Alone, it carries the whole batch effect above.
+- **(i) A pre-save check in the SQL Server provider.** A `SaveChangesInterceptor` computes, for every added or modified entry, the key bytes of each index over a text-class column. It fails before any SQL is sent, with an exception that names the item and the index.
+  - **Prototype measured.** The interceptor in the scratch test gives *"Item 2072a972-… cannot be saved on SQL Server: its key for index IX_BaseItems_Path takes 1818 bytes, over the limit of 1700"*. That is the same byte count the server reports, and no `INSERT` into `BaseItems` is sent.
+  - **Same blast radius.** It still fails the whole batch: 0 of 50 saved. It only makes the failure attributable to a file.
+  - **Cost.** It repeats the server's arithmetic in the provider: 2 bytes per code unit, plus each fixed type's width. It is provider-only and neutral to shared code.
+- **(S) Save item by item when a batch fails, in shared code.** When `SaveItems` fails on a batch of more than one item with an error that is not a retryable write conflict, it saves the items again one at a time, each in its own transaction, in the list's order. It then logs and skips only the items that fail, naming the item, its path and the cause.
+  - **Measured** (emulated from the test by calling `SaveItems` once per item after the failed batch): 49 of 50 saved, and only the over-long item fails, with its error, on SQL Server, PostgreSQL and SQLite. The fallback took about 1.6 s on SQL Server, 0.2 s on PostgreSQL and 0.1 s on SQLite for 50 items. It runs only after a batch failed, and costs nothing on the normal path.
+  - **What it fixes.** With the save succeeding for the rest, `CreateItems` returns, and the scan goes on into the folder's subfolders and its metadata refresh. The cost of an over-long key becomes one item missing and logged on every scan. This holds on every engine and for any error of one row, not only for key length.
+  - **Masking real errors.** A skipped item is logged at Error level on every scan, with its identity and the exception, so it is not lost silently. The fallback must not trigger on connection, time-out or deadlock errors. Those are either retried by `WriteConflictRetry` (step 07) or systemic. If the first per-item saves fail with the same kind of error, the fallback should stop and rethrow, so a lost connection does not cost N round trips.
+  - **Consistency.**
+    - Each item's rows (the item, its ancestors, values, people, providers, streams) stay atomic, because each item is saved in its own transaction.
+    - The folder's set of new children becomes partial, which is the point.
+    - `CreateItems` appends resolved local alternate versions after their primaries (`LibraryManager.cs:2446-2491`). The fallback keeps that order and skips an alternate whose primary failed, so no alternate points at a missing primary.
+    - New children reference their folder, which already exists. Whether extras can share a batch with their owner (`OwnerId` is a foreign key) is not checked here; the step must check it and skip dependents of a failed item the same way.
+  - **Shared-code impact.** One method in `ItemPersistenceService`, with no engine branch and no raw SQL, so it is neutral under the 22d ban. It changes upstream behaviour on every engine, though, so it is its own upstream-shaped step with failing-first tests on all engines, not part of the SQL Server work.
+- **(b) A persisted computed hash, indexed instead of the text.** `PathHash AS CAST(HASHBYTES('SHA2_256', [Path]) AS binary(32)) PERSISTED`, with the index on `PathHash` instead of `Path`.
+  - **Measured** (`adr0012-hash-plans-2022.txt`):
+    - a 4000-unit value gives a 32-byte key; with only the hash indexed, `Path` can even be `nvarchar(max)`, and a 5000-character path was stored;
+    - `WHERE Path = @p` alone becomes a clustered index scan;
+    - with `PathHash = HASHBYTES('SHA2_256', @p) AND Path = @p` it is an index seek and a key lookup;
+    - a predicate on the hash expression itself is matched to the computed column's index automatically.
+  - **CHECKSUM is unsuitable.** It is 4 bytes, collision-prone, and under BIN2 it ignores trailing spaces.
+  - **Query rewrite.** Each equality and membership predicate on the column must gain the hash conjunct. A provider `IQueryExpressionInterceptor`, the mechanism the MySQL provider already uses (ADR-0011 F2, F7), can add it for `Path ==` and `paths.Contains(Path)`. A list goes through the same `OPENJSON` parameter. Hash plus text equality also makes those predicates exact under trailing spaces, which narrows ADR-0006 G1.
+  - **Scope.** It serves the equality-only columns, `Path` first. It does not serve `SortName`, which needs order and a prefix.
+  - **Cost.**
+    - A model shape that differs from SQLite (an allowance in the kit).
+    - The provider interceptor.
+    - A guard test that every `Path` predicate the shared code sends seeks on SQL Server, because a new predicate shape would scan.
+    - ADR-0009 L4 rejected the shared form of this.
 - **(c) Lower bounds on SQL Server only.**
   - **Bound size.** Single-column indexes could take `nvarchar(850)`. The composites would split about 1188 bytes between up to three text columns, about 198 units each.
-  - **Rejecting.** A value over the bound fails at the column (Msg 2628) instead of at the index (Msg 1946). That is earlier than (a), not later: the column bound applies to every row, while (a) fails only when the actual key overflows.
-  - **Truncating.** Truncation would break equality: a truncated `Path` no longer finds its item, and a truncated key merges distinct items. With `ANSI_WARNINGS OFF` the server truncates silently (measured: 851 units became 850), which ADR-0009 L2 forbids.
+  - **Rejecting.** A value over the bound fails at the column (Msg 2628), earlier than (a), and with the same batch effect.
+  - **Truncating.** Truncation would break equality, and with `ANSI_WARNINGS OFF` the server truncates silently, which ADR-0009 L2 forbids.
   - Neither variant is better than (a).
 - **(d) Drop or reshape indexes on SQL Server only**, as the MySQL provider drops filters.
-  - Dropping `IX_BaseItems_Path` would leave the item lookup by path, which runs on every scan, without an index. Dropping the composites would remove the access paths they were added for (series, latest, resume, next up).
-  - The single-column indexes still set an 850-unit limit per column, so (d) only moves a composite's threshold up to that of its columns.
+  - Dropping `IX_BaseItems_Path` would leave the item lookup by path, which runs on every scan, without an index. Dropping the composites would remove the access paths they were added for.
+  - The single-column indexes still set an 850-unit limit per column.
 - **(e) Included columns or filtered indexes.**
-  - **INCLUDE.** Included columns do not count against the 1700 bytes; even `nvarchar(max)` can be included (measured). A composite whose trailing text column only covers a query could include it instead of keying it. For example, `(Type, TopParentId) INCLUDE (SortName)`, which drops the per-row `SortName` limit of that index from 797 to none, but loses the ordered scan for "series sorted by `SortName`". A single-column index cannot do this.
-  - **Filtered.** A filtered index that leaves out long values is impossible: a filter cannot call `LEN` or `DATALENGTH` (Msg 10735, measured), and cannot reference a computed column.
-- **(f) UTF-8: `varchar(n)` with `Latin1_General_100_BIN2_UTF8`.**
-  - **Availability.** The binary UTF-8 collation exists on both versions (it is the only `%BIN2%UTF8` collation). It orders by code point (measured: `z < U+E000 < U+FFFD < U+1F600`), which is SQLite's order, so it would close ADR-0006 G2. Trailing spaces still compare equal, so G1 stays.
-  - **Bytes per character, measured** when assigned from `nvarchar`: ASCII 1, `é` 2, CJK 3, emoji 4. The 1700-byte key therefore holds 1700 ASCII characters (twice the `nvarchar` room), 850 two-byte characters (the same), 566 CJK characters (fewer than the 850 of `nvarchar`) and 425 emoji (the same). Every threshold was measured, with Msg 1946 past it.
-  - **The column counts bytes.** `varchar(4000)` rejects 1500 CJK characters (4500 bytes, Msg 2628), which `nvarchar(4000)` stores. That is the reason ADR-0006 C3 gave for not choosing UTF-8 for the key-class bounds of ADR-0009 L1, which count characters.
-  - **Parameters through EF.** The probe `SqlServerUtf8ProbeTests` maps a column with `IsUnicode(false)`, `varchar(8000)` and the UTF-8 collation, as a provider convention would, and records what EF sends and what the server plans (`/tmp/sqlserver-spike/evidence/probes-c3-2022/probes.txt`):
-    - **EF types the parameter from the column.** It sends `@path varchar(8000)` (`DbType.AnsiString`) for equality, for the LIKE prefix and for each value of an `IN` list.
-    - **The plans seek.** Equality, prefix and `IN` all use an index seek, in a database whose default collation is UTF-8 and in one whose default is Latin1 BIN2.
-    - **Where a scan comes from.** A parameter typed `nvarchar` against the `varchar` column converts the column (`CONVERT_IMPLICIT(nvarchar(4000), [Path])`) and turns the seek into an index scan (measured with `sp_executesql`). EF does not produce such a parameter for a mapped column. Only hand-written SQL or a function translation that types its argument `nvarchar` does. The default `LikeIgnoreAsciiCase` pattern is `nvarchar(4000)`, but its `lower(column)` scans anyway.
-  - **Silent corruption, a data-integrity condition.** SqlClient encodes a `varchar` parameter in the code page of the database's default collation, and `CAST(… AS varchar)` uses the same code page.
-    - **In a Latin1-default database.** EF's `AnsiString` parameter stores `日é😀/a` as `3F C3A9 3F3F 2F 61`: CJK and emoji become `?`, while Latin letters survive. An equality on the same value still finds the row, because the parameter is mangled the same way. Two different CJK titles therefore become the same stored value, with no error. `CAST(N'日' AS varchar(10))` is `0x3F` there.
-    - **In a UTF-8-default database.** The bytes are correct (`E697A5 C3A9 F09F9880 2F 61`).
-    - **No shared query casts text to `varchar`.** EF writes `CONVERT(varchar(11), …)` only for a number's `ToString()`, which is ASCII.
-    - **What (f) would have to enforce.** The provider would have to refuse to start unless `DATABASEPROPERTYEX(DB_NAME(), 'Collation')` is a `*_UTF8` collation, with a message that names the setting. It would have to create its own databases with that collation. And it would need a red test that writes non-ASCII text through a `varchar` parameter in a Latin1-default database and shows the corruption.
-    - **What the refusal costs.** The default collation of an existing database can only be changed with exclusive access, and not while schema-bound objects depend on it. So refusing to start puts that work on the operator, for a provider that cannot repair it.
-  - **Cost.**
-    - A second text type next to `nvarchar`: the key-class columns cannot move without breaking ADR-0009 L1.
-    - Every text-class column, parameter and literal becomes `varchar`.
-    - The UTF-8 database default above must be enforced.
-    - No outcome changes for 2-byte scripts, and CJK gets worse.
+  - **INCLUDE.** Included columns do not count against the 1700 bytes; even `nvarchar(max)` can be included (measured). A composite whose trailing text column only covers a query could include it instead of keying it, at the cost of its ordered scan. A single-column index cannot do this.
+  - **Filtered.** A filter cannot call `LEN` or `DATALENGTH` (Msg 10735, measured in `adr0012-keys-*.txt`), and cannot reference a computed column.
+- **(f) UTF-8: `varchar(n)` with `Latin1_General_100_BIN2_UTF8`.** The measurements are in `adr0012-utf8.txt` and `adr0012-utf8-plans.txt`, and the EF probe output in `probes-c3-2022/probes.txt`. Section (f) of `adr0012-keys-*.txt` was an early probe that converted through the database's Latin1 code page. Its CJK and emoji rows are void and `adr0012-utf8.txt` supersedes them; its ASCII and `é` rows stand.
+  - **Collation and order.** The binary UTF-8 collation exists on both versions (the only `%BIN2%UTF8` one). It orders by code point (`z < U+E000 < U+FFFD < U+1F600`), so it would close ADR-0006 G2. Trailing spaces still compare equal.
+  - **Bytes per character** when assigned from `nvarchar` (`adr0012-utf8.txt`): ASCII 1, `é` 2, CJK 3, emoji 4. The 1700-byte key therefore holds 1700 ASCII characters (twice `nvarchar`'s room; 1701 fails, from `adr0012-keys-*.txt`), 850 `é` (851 fails), 566 CJK characters (567 fails) and 425 emoji (426 fails). Each failure is Msg 1946.
+  - **The column counts bytes.** `varchar(4000)` rejects 1500 CJK characters (4500 bytes, Msg 2628), which `nvarchar(4000)` stores. That is ADR-0006 C3's reason against UTF-8 for the key-class bounds of ADR-0009 L1.
+  - **Parameters through EF.** For a column mapped with `IsUnicode(false)`, EF sends `varchar` parameters, and equality, LIKE prefix and `IN` lists all seek. An `nvarchar` parameter converts the column and scans, but only hand-written SQL or a function translation that types its argument `nvarchar` produces one.
+  - **Silent corruption.** In a database whose default collation is not UTF-8, EF's `varchar` parameter stores `日é😀/a` as `3F C3A9 3F3F 2F 61`. An equality on the same value still finds the row, because the parameter is mangled the same way. From that it follows, though it was not measured directly, that two different CJK titles would be stored as the same value. The bytes are correct in a database whose default is UTF-8.
+  - **What (f) would have to enforce.** Refusing to start unless the database default is `*_UTF8`; creating its own databases with it; and a red test that shows the corruption in a Latin1-default database. The operator could only change an existing database's default with exclusive access.
+  - **Same blast radius as (a).** It moves the limit up for ASCII and down for CJK.
+
+### What each option means for `Path`
+
+| Option | Over-long `Path` | `Path` equality and `IN` | Shared query changes | Shared-code impact (22d) |
+|---|---|---|---|---|
+| (a) | fails at 851 units, whole batch | seek on `IX_BaseItems_Path` | none | none |
+| (i) | fails before SQL at 851 units, naming item and index; whole batch | seek | none | none, provider interceptor |
+| (S) | the item is skipped and logged; the rest of the batch saves | seek | none | one method in `ItemPersistenceService`, engine-neutral, no raw SQL; its own upstream-shaped step |
+| (b) for `Path` | no limit (`nvarchar(max)` possible) | seek on the hash index once the provider adds the hash conjunct; scan without it | none | none, provider interceptor and a SQL Server-only computed column |
+| (c) | fails at the column, whole batch | seek | none | none |
+| (d) | without the index: no limit | scan on every scan of the library | none | none |
+| (e) | not applicable to the single-column `Path` index | seek | none | none |
+| (f) | fails at 1701 ASCII bytes or 567 CJK characters, whole batch | seek, with `varchar` parameters | none | none, but a startup refusal |
 
 ## Decision (proposed)
 
-**(a): keep `nvarchar(4000)` for the text-class columns and keep the runtime failure as the known gap `ADR-0009/G2`, made precise and pinned by tests.** Shared code does not change, so the decision is neutral to the 22d raw-SQL ban and to SQLite, PostgreSQL, MySQL and MariaDB.
-
-- **Why (a).**
-  - **The failure is safe.** It is loud and confined to one row's save. It never truncates silently, and a restore is expected to roll back as a whole (test 3).
-  - **The data rarely reaches it.** The thresholds are 850 code units for a path or a name, and 714 to 805 for the composites at realistic values. The library data that would reach them is rare: a path or title over 850 characters, or a series held in more than about 20 libraries with a long name and a long episode sort name.
-  - **Nothing else removes the limit.** Every other option keeps a per-row limit, except (b) for the equality-only columns:
-    - (c) fails earlier;
-    - (d) and (e) lose access paths and leave the single-column limit;
-    - (f) moves the limit up for ASCII and down for CJK. Its price is a second text type, and a database default collation the provider must enforce at startup, because otherwise non-ASCII text is corrupted silently.
-  - **(b) is for later.** It is the only real fix, and only for `Path` and the keys. It is worth its interceptor and model divergence only once the gap is seen in real libraries, which is the trigger ADR-0009 L4 already set.
-- **What the provider does (step 27).**
-  - It does not suppress Msg 1945. The baseline migration creates the 18 indexes as listed, and the warnings are expected.
-  - It does not classify Msg 1946 as retryable.
-- **The known gap.** `ADR-0009/G2` becomes a `KnownGaps` entry keyed to `SqlServer`. Its matcher accepts only a `SqlException` with number 1946, so any other failure still fails the test.
-- **Revisit when** any of these holds:
-  - a user report or a log shows Msg 1946 on a real library, which leads to (b) for `Path` first;
-  - SQL Server is to be promoted to Supported, where ADR-0009 L2's restore invariant would bind and G2 must close: (b) for the equality-only columns, and (e) for `SortName`'s composites;
-  - ADR-0006 G2's ordering becomes a promotion blocker, which leads to (f) for the text class only. It would come with the startup refusal, the creation collation and the red corruption test described under (f).
+1. **Storage stays (a).** The text-class columns keep `nvarchar(4000)` on SQL Server, and keys over 1700 bytes stay the known gap `ADR-0009/G2`. It becomes a `KnownGaps` entry keyed to `SqlServer`, whose matcher accepts only `SqlException` number 1946. No other storage option removes the limit for every column. (b) removes it for `Path` alone. (f) trades ASCII room for CJK room behind a startup refusal.
+2. **The blast radius is limited by (S), as a separate shared step.**
+   - **Why.** The batch effect is the real cost, and it is not particular to SQL Server. It applies today to PostgreSQL, a Supported engine (ADR-0009 G1, measured), and to any error of one row on any engine.
+   - **What changes.** (S) turns "a folder stops gaining items" into "one item is missing and logged". It costs nothing on the normal path, and it needs no change to any query.
+   - **Where it goes.** It is an engine-neutral change to upstream behaviour, so it does not go into the SQL Server steps. It is the independent unit X11 in `pr-plan.md` (B33), cut from `upstream/master`, with failing-first tests on every engine that use a deliberately failing row. It is a candidate for the upstream series.
+3. **If (S) is not accepted, the SQL Server provider takes (b) for `Path` in step 27, together with (i).**
+   - (b) removes the realistic first case: an over-long path, now with no limit and still a seek.
+   - (i) makes any other text-class overflow name its item and index.
+   - SQL Server is not registered (step 28) with the folder-wide failure mode and no mitigation.
+4. **(i) is not adopted alongside (S).** With (S), the per-item save already attributes the failure to the item, and the server's message names the index. (i) would duplicate the server's arithmetic for no change in outcome.
+5. **What the provider does in step 27 either way.** It does not suppress Msg 1945, because the 18 indexes are created as listed and the warnings are expected. It does not classify Msg 1946 as retryable.
+6. **Revisit triggers.**
+   - **A Msg 1946 on a real library's `Path`** leads to (b) for `Path`. With (S) it shows as a skipped item in the log, and without (S) as a folder that stops growing.
+   - **SQL Server is to be promoted to Supported.** ADR-0009 L2's restore invariant would then bind, so G2 must close: (b) for the equality-only columns, and (e) for `SortName`'s composites.
+   - **ADR-0006 G2's ordering becomes a promotion blocker.** That leads to (f) for the text class only, with the enforcement described under (f).
+7. **The SQL Server how-to (step 29)** says plainly: an item whose path is longer than about 850 characters, or 425 characters outside the Basic Multilingual Plane such as emoji, is not saved on SQL Server. It then says what happens to the rest of its folder. Without (S), none of the folder's new items are saved and its subfolders are not scanned. With (S), only that item is missing, and the log names it.
 
 ## Consequences
 
-- No shared code, no SQLite migration, no change for the other engines.
-- The SQL Server baseline (step 28) carries 18 indexes over 1700 bytes, and every migration that adds an index over a text-class column adds one more. The model test below makes each one a reviewed decision.
-- Library scans on SQL Server can fail for an item whose path, name or key is over the threshold. The SQL Server how-to (step 29) states the thresholds.
-- The step 27 and 28 brief, including the red-first tests, is in `pr-plan.md` under the 2026-10-16 SQL Server spike amendment (B33).
+- **Storage.** No shared code, no SQLite migration and no change for the other engines.
+- **Indexes.** The SQL Server baseline (step 28) carries 18 indexes over 1700 bytes, and every migration that adds an index over a text-class column adds one more. The budget test below makes each one a reviewed decision.
+- **(S) is a shared change of its own.** It changes what a failed batch costs on SQLite, PostgreSQL, MySQL and MariaDB too, and it needs its own review.
+- **The brief.** The step 27 and 28 brief, including the red-first tests, is in `pr-plan.md` under the 2026-10-16 SQL Server spike amendment (B33).
 
 ## Tests required (step 27)
 
@@ -134,5 +167,11 @@
    - `Path`: 850 code units saves and 851 fails with Msg 1946, marked `KnownGap.On(SqlServer, ADR-0009/G2)`.
    - The composite `(Type, SeriesPresentationUniqueKey, PresentationUniqueKey, SortName)` behaves the same at its computed threshold.
    - Both tests pass unchanged, without the marker, on the other engines.
-3. **Restore fails closed.** A backup whose item has an 851-unit `Path` fails to restore on SQL Server with Msg 1946, and the database afterwards holds exactly the rows it held before.
-4. **Warning, not error, at migration.** Applying the baseline logs no error, and the 18 over-budget indexes exist.
+3. **Batch save.** `SaveItems` with N new children of one folder, one of them with an 851-unit `Path`. The test pins the actual behaviour per engine:
+   - **Without (S):** no item is saved, and the exception is Msg 1946 on SQL Server and `54000` on PostgreSQL for a path over its limit.
+   - **With (S):** N − 1 items are saved, and the one is logged.
+
+   A scan-level variant asserts that the folder's subfolders are, or are not, validated.
+4. **Restore fails closed (red first).** A backup whose item has an 851-unit `Path` fails to restore on SQL Server with Msg 1946, and the database afterwards holds exactly the rows it held before.
+5. **Warning, not error, at migration.** Applying the baseline logs no error, and the 18 over-budget indexes exist.
+6. **If (b) is taken.** Every `Path` predicate the shared code sends seeks on SQL Server (captured SQL and plan), and a 5000-character `Path` is saved.
