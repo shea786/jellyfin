@@ -106,7 +106,7 @@ These steps reconcile with the parity task list P1-P7. P8 is a Postgres item and
 | # | Branch | Scope | Key files | Tests added | Depends on | SQLite migration |
 |---|---|---|---|---|---|---|
 | 27a | `multidb/27a-conformance-kit` | The fork half of the old step 27a (ADR-0001 W5), before any SQL Server work (ADR-0001 E2-E3): (a) MySQL and MariaDB rows in the conformance kit of 22d, plus a LIKE `[` row on every engine; it replaces the MySQL purge test class. The `ParentId` row is where the step 24 pre-clear (M5) is proved on MySQL and MariaDB. (b) A test-side `EngineTraits` table replacing the engine switches in `PoolChecks`, `ModelRows`, `BackupServiceTests` and `JellyfinApplicationFactory`. (c) Escape `[` in the shared `LikePatterns` (motivated by SQL Server only, so it stays out of the upstream series). | `tests/Jellyfin.Database.Testing/*`, `LikePatterns.cs` | The kit on SQLite, PostgreSQL, MySQL and MariaDB. **Done 2026-10-16 (B31, B32):** the isolation fix (`399af59770`), binary collation (`a0bf39394e`), the kit on MySQL and MariaDB with `EngineTraits`, the flavour sentinel, the `[` escape and the purge contract (`a6cd869ce7`), a deterministic FolderDelete row (`2f1f16c85f`), and the dedicated ban rule JF0002 (`a142db1590`). Its follow-ups are listed in B32, among them the MySQL purge test classes. Next: SQL Server (ADR-0001 E2-E3) | 22d, 26 | no |
-| 27 | `multidb/27-sqlserver-provider` | `Jellyfin.Database.Providers.SqlServer` and its members (identity-insert scope, purge with `DELETE` + `RESEED`, retry codes, RCSI warning). Conventions: `binary(16)` Guid converter, BIN2 collation, `nvarchar(4000)` for text-class columns, OR filter dropped, `NoAction` on the 2 cascade FKs (ADR-0001 M5). Pool backend. **Not registered.** Written only after the SQL Server spike (ADR-0001 E3: the hazard checklist and the whole suite against a conventions-only stub) and after an ADR settles the text-class composite indexes over 1700 bytes (`Path`, `SortName`, `PresentationUniqueKey`). Entry criteria from step 20b (ADR-0005 R13): `LikeIgnoreAsciiCase` translated with an ASCII-only fold, so that `LikeIgnoreAsciiCaseBehaviourTests` and `BaseItemRepositorySortNameFilterTests` pass on this provider's pooled backends; a known-gap ledger entry, keyed to this provider, for `NameStartsWithOrGreater`/`NameLessThan` with a non-ASCII term. | New project, `Directory.Packages.props` (`Microsoft.EntityFrameworkCore.SqlServer` at the EF version, `Testcontainers.MsSql` 4.16.0) | Member tests; the suite with ADR-0006 G1/G2 and ADR-0009 G2 recorded; folder delete (M5); unique-NULL filter (M6) | 22, 27a | no |
+| 27 | `multidb/27-sqlserver-provider` | `Jellyfin.Database.Providers.SqlServer` and its members (identity-insert scope, purge with `DELETE` + `RESEED`, retry codes, RCSI warning). Conventions: `binary(16)` Guid converter, BIN2 collation, `nvarchar(4000)` for text-class columns, OR filter dropped, `NoAction` on the 2 cascade FKs (ADR-0001 M5). Pool backend. **Not registered.** Written only after the SQL Server spike (ADR-0001 E3: the hazard checklist and the whole suite against a conventions-only stub) and after an ADR settles the text-class composite indexes over 1700 bytes (`Path`, `SortName`, `PresentationUniqueKey`). **Spike done 2026-10-16 (B33):** the brief is in B33, and the index question is ADR-0012 (Proposed). Entry criteria from step 20b (ADR-0005 R13): `LikeIgnoreAsciiCase` translated with an ASCII-only fold, so that `LikeIgnoreAsciiCaseBehaviourTests` and `BaseItemRepositorySortNameFilterTests` pass on this provider's pooled backends; a known-gap ledger entry, keyed to this provider, for `NameStartsWithOrGreater`/`NameLessThan` with a non-ASCII term. | New project, `Directory.Packages.props` (`Microsoft.EntityFrameworkCore.SqlServer` at the EF version, `Testcontainers.MsSql` 4.16.0) | Member tests; the suite with ADR-0006 G1/G2 and ADR-0009 G2 recorded; folder delete (M5); unique-NULL filter (M6) | 22, 27a | no |
 | 28 | `multidb/28-sqlserver-migrations-and-registration` | Baseline and registration of `Jellyfin-SqlServer` with the Experimental warning | Provider `Migrations/`, `ServiceCollectionExtensions.cs:24-27` | Migration tests (a)-(c); failing-migration test | 27 | no |
 | 29 | `multidb/29-ci-sqlserver` | Add the `SqlServer` matrix entry, not required (ADR-0010 CI3) | `.github/workflows/ci-tests.yml` | Sentinel | 28 | no |
 
@@ -767,3 +767,108 @@ The user changed the delivery strategy. This supersedes "small, stacked, indepen
       - the engine switches in `StartOverTests` and `AddNormalisedMatchColumnsMigrationTests`;
       - analyzer coverage gaps (operators, `typeof`, type-level bans);
       - JF0002 and JF0003 placed straight into Shipped.
+
+## Amendments (SQL Server spike, 2026-10-16)
+
+- **B33. The SQL Server spike (ADR-0001 E3) and the brief for steps 27 and 28.**
+  - Details, the full hazard checklist and evidence paths are in [the spike explainer](explainers/sqlserver-spike.md). The text-class index question is [ADR-0012](0012-sqlserver-text-index-keys.md), Proposed.
+  - **The spike.**
+    - **Branch.** `spike/sqlserver`, not for merge: `310c4522af` (the conventions-only stub), `a9f63bf1e1` (probes) and `c0b4bcc44b` (the hooks the first run asked for).
+    - **Base.** The branch was cut from `a142db1590` and rebased onto the docs-only `8845731f10`.
+    - **Gates.** Every commit: Release 0/0, Debug 0 errors with 211 warnings (the base's set, unchanged), and the exact format command. Debug caught a CA2213 that Release did not.
+  - **Results.**
+    - **The stub on SQL Server 2022 CU27** (16.0.4295.3): Implementations 2464 passed, 86 failed, 144 skipped; Server 126 / 9 / 30; Integration 140 / 0 / 8. The server starts, migrates a throwaway baseline and serves every integration test.
+    - **The same stub on 2025 CU9 + GDR** (17.0.5015.4) agrees test for test, except for an order-dependent EF warning (explainer).
+    - **With the hooks** (`c0b4bcc44b`):
+      - **2022:** Implementations 2544 / 5 / 156; Server 126 / 0 / 39; Integration 140 / 0 / 8.
+      - **2025:** 2539 / 10 / 156; 126 / 0 / 39; 140 / 0 / 8.
+      - **The one real failure left** is the kit's model-shape row, which needs the allowances below.
+      - **The rest** is EF's process-wide `ManyServiceProvidersCreatedWarning`, which lands on different tests from run to run; its cause is open (explainer).
+    - **The four existing engines at `c0b4bcc44b`:** 12 legs, 12,123 rows; 11,482 passed, 641 skipped, 0 failed; every sentinel passed. The stub does not regress SQLite, PostgreSQL, MySQL or MariaDB.
+    - **Model creation without the conventions** gives Msg 1785 (both cascades), Msg 156 (the OR filter) and Msg 1919 (`nvarchar(max)` in a key), the same on both versions.
+  - **The checklist in brief** (30 items):
+    - **Works:** Guid order and lists; `QUOTED_IDENTIFIER`; unique NULLs (M6); `LIKE` with `[`; DateTime range in `datetime2(7)`; 2100 parameters (EF falls back to one `OPENJSON` parameter; 100,000 ids pass); reseed with the `last_value` rule; transactional DDL; DatePlayed and `MAX` over a union; raw SQL in shared code; session defaults.
+    - **Needs a convention:** `NoAction` cascades (M5); the OR filter (M3); `nvarchar(4000)` for the text class; `nvarchar(max)` for bounded text outside keys and indexes.
+    - **Needs a hook:** `IDENTITY_INSERT`; the retry classifier; `LikeIgnoreAsciiCase` through `TRANSLATE`; a READ COMMITTED connection, because pooled connections keep their level; and a `datetime2` constant for `DATEADD`, because EF's untyped literal is `datetime` and year 1 fails the PremiereDate sort (Msg 517).
+    - **Known gaps:** ADR-0006 G1 and G2, neither of which any suite test covers yet; `ADR-0009/G2` (ADR-0012); the sort-name range filters with a non-ASCII term (MySQL's lists, exactly).
+    - **Test side:** `COUNT(*)` read as `long`; bracket quoting in a failed-write interceptor; the overlong-key seeds; the model-shape allowance; EF's process-wide service-provider warning.
+    - **No shared-code issue was found.**
+  - **Corrections to record in step 27:**
+    - **ADR-0007 G1.** `MIN` over `uniqueidentifier` exists on 2022 CU27 and 2025; its order is the problem, and `binary(16)` stays.
+    - **ADR-0008 R3.** On SQL Server, as on MySQL (S5), the provider must start transactions at READ COMMITTED itself.
+  - **SQL Server 2025.** `2025-CU9-GDR1-ubuntu-24.04` (`sha256:742481d1…ffbab2`) is GA since 18 November 2025, with mainstream support to 7 January 2031. Sources and the full comparison are in the explainer. 2022 stays the floor.
+  - **Relayed CI.** Read-only by the orchestrator: green at `a142db1590`, the JF0002 rule. That covers ABI - HEAD (the Debug build that enforces JF0002 in CI), all five database jobs, tests, format, OpenAPI and CodeQL.
+  - **Brief for step 27** (`multidb/27-sqlserver-provider`; not registered).
+    - **Packages.**
+      - `Microsoft.EntityFrameworkCore.SqlServer` at the EF version, and `Testcontainers.MsSql` 4.16.0, both central.
+      - Pin `System.Security.Cryptography.Pkcs` 10.0.13, because SqlClient 6.1.6 brings 9.0.11, flagged NU1902 and NU1903.
+      - Review SqlClient's Azure dependency tree as ADR-0011 R1 did for MySQL.
+      - Test image `mcr.microsoft.com/mssql/server:2022-CU27-ubuntu-22.04`, pinned by digest (`sha256:4402d880…a090` on MCR, 2026-10-16).
+    - **Conventions, each with a model test.**
+      - `binary(16)` Guids through `ToByteArray(bigEndian: true)` (ADR-0007 P2).
+      - `Latin1_General_100_BIN2` on every column stored as text, chosen by store type as C8 does. The history repository gets BIN2 too. There is a startup check of the database default collation, which warns, and no `ALTER DATABASE … COLLATE` in the baseline.
+      - `nvarchar(4000)` for the text class, with ADR-0012's budget test.
+      - `nvarchar(max)` for bounded text outside keys and indexes.
+      - Only the OR filter dropped.
+      - `NoAction` on `BaseItems.ParentId` and `AncestorIds.ParentItemId`.
+      - `IdentifierLengthConvention(128)`.
+    - **Members and EF hooks.**
+      - **Retry classifier.** `IsRetryableWriteConflict` with 2627, 2601, 1205, 1222 and 3960; 547, 2628, 8152 and 1946 are not retryable.
+      - **Explicit identities.** `BeginExplicitIdentityInsertAsync` with `SET IDENTITY_INSERT` per table, on the open connection.
+      - **Purge.** Constraints off, `DELETE`, `WITH CHECK CHECK CONSTRAINT ALL`, then `RESEED 0` only where `last_value IS NOT NULL`, inside and outside a transaction.
+      - **Isolation.** `ReadCommittedConnection`, which replaces `ISqlServerConnection` (EF1001, as MySQL's replaces `IMySqlRelationalConnection`) and turns an unnamed level into READ COMMITTED. SqlClient keeps a pooled connection's level: measured with SERIALIZABLE on both versions. Also the RCSI warning at `Initialise` (ADR-0008 R3).
+      - **`LikeIgnoreAsciiCase`.** Translated as `TRANSLATE(value, 'A…Z', 'a…z') LIKE pattern ESCAPE '\'` (R13).
+      - **`DATEADD` over a constant.** An `IMethodCallTranslatorPlugin`, added through an options extension with scoped lifetime, so that `DateTime.AddYears` on a constant uses a `datetime2` literal. Check the other `DATEADD` members the same way.
+      - **Compatibility level.** EF assumes 150; pin it explicitly, and run the suite at 160 before choosing it.
+      - **Server floor.** Refuse a server older than 2022 at `Initialise`.
+      - **Experimental warning.** Once per database, with the password removed from logged connection strings.
+      - **Backups and statistics.** `MigrationBackupFast` stays empty with a warning, as MySQL's does (F5); `RefreshStatistics` runs `UPDATE STATISTICS`.
+    - **Test side.**
+      - **`EngineTraits`.**
+        - A row for SQL Server.
+        - A capability for "key-class columns enforce their bound", replacing the provider lists in `EnforceKeyLengthsTests` and `NormalizeOverlongKeysTests`.
+        - A count statement in `PoolStatements`.
+        - A foreign-key switch-off that is DDL, because SQL Server has no session switch for it.
+        - The integration factory's database-name and connect switches.
+      - **Model-conformance allowances**, replacing the single `SupportsPartialIndexes`:
+        - `UnexpressibleIndexFilters`: the exact filter texts an engine keeps as a non-unique index without its filter. For SQL Server the OR filter; for the MySQL family all of them.
+        - `NoActionCascades`: (table, columns) pairs stored as `NoAction` instead of `Cascade`.
+        - **Guards, in the 27a style.** Each entry must exist in the reference model, on a non-unique index or as a cascade, so the allowance is not vacuous. The actual model must differ exactly there. Every other difference still fails. An engine with `NoActionCascades` must be enrolled in the FolderDelete row.
+      - **Other test fixes.**
+        - Enrol SQL Server in `SelectedBackendPoolTests`, `FixtureSeamTests`, `StartOverTests` and `ItemPersistenceWriteConflictTests`.
+        - Match the table of the failed-write interceptor through `ISqlGenerationHelper`.
+        - Let the offline model tests ignore `ManyServiceProvidersCreatedWarning`, which they cause by design.
+    - **Red-first tests, one or more per hazard**, each failing on the stub before its fix:
+
+      | Hazard | Red test |
+      |---|---|
+      | Cascades | FolderDelete row and the model test of `NoAction` (Msg 1785 without it) |
+      | OR filter | Model test of the three kept filters and the one dropped (Msg 156 without it) |
+      | `QUOTED_IDENTIFIER` | Session test, `quoted_identifier = 1` |
+      | Unique NULLs | M6 model test of the `[UserId] IS NOT NULL` filter |
+      | Text keys | ADR-0012 tests 1 to 4 |
+      | Unindexed text | `TextColumnLengthTests` (Msg 2628 on the stub) |
+      | Guid order | ADR-0007 test 1 and a store-type test of every Guid column |
+      | `LikeIgnoreAsciiCase` | `LikeIgnoreAsciiCaseBehaviourTests`, the Like kit rows, `BaseItemRepositorySortNameFilterTests` (26 red on the stub) |
+      | Range filters | The ledger entry, matched only by MySQL's lists |
+      | Trailing spaces | New: `ItemValues` `Rock` and `Rock␠`, both stored and one found by equality; `KnownGap` `ADR-0006/G1` on SQL Server |
+      | UTF-16 order | New: an order test with U+E000, U+FFFD and U+1F600; `KnownGap` `ADR-0006/G2` |
+      | `DATEADD` literal | `BaseItemRepositoryPremiereDateOrderTests` with year 1 (Msg 517 on the stub) |
+      | Identity insert | `BackupServiceTests` and the Restore kit rows (Msg 544 on the stub) |
+      | Reseed | A test that a never-used table's first id after the purge is 1 (0 with an unconditional `RESEED 0`) |
+      | Isolation | Leave a pooled connection at SERIALIZABLE, then assert that an EF transaction and a save run at READ COMMITTED; the RCSI warning with RCSI off |
+      | Retry | The WriteConflict kit rows, and classifier unit tests with real `SqlException`s of the measured numbers |
+      | 2100 parameters | The IdList kit rows (already green) |
+      | Collation | Every text column BIN2, in the model and in the migrated schema; a database with another default gives the warning |
+      | Compatibility level | The options name the pinned level |
+  - **Brief for step 28** (`multidb/28-sqlserver-migrations-and-registration`).
+    - **Baseline.** `20200101000000_InitialCreate`, generated with the one command (W1, W3) from a fixed design-time factory.
+      - It holds the 18 indexes over 1700 bytes; their Msg 1945 warnings are expected (ADR-0012).
+      - It sets no database collation.
+      - `CoversThroughSqliteMigration` names the newest SQLite migration at the time.
+    - **Registration.** `Jellyfin-SqlServer` in `DatabaseProviderTypes()`, with the Experimental warning (M1).
+    - **Migration tests (a) to (c)**, the 22c contents check with SQL Server's allowlist entries, and the failing-migration test. DDL is transactional, so `SupportsTransactionalMigrations` stays `true` and no marker is needed.
+  - **Step 29.**
+    - **Floor entry.** A `SqlServer` entry on 2022 CU27, pinned by digest and not required (ADR-0010 CI3).
+    - **Proposed: an advisory entry** for `2025-CU9-GDR1-ubuntu-24.04` (`sha256:742481d1b1186cccc81220a1eaacef244ca8d0f7d19c8e5c70df8ae541ffbab2`), as MySQL 9.7.2 and MariaDB 12.3.3 are. Its failure would not fail the run. 2025 is GA with mainstream support to 2031; the spike found no behavioural difference; and new databases at compatibility level 170 are where a later EF default would first differ.
+    - The how-to states ADR-0012's thresholds.
