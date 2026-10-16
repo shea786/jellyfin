@@ -185,3 +185,58 @@ Two kinds of option are weighed. The storage and index options decide when a key
 4. **Restore fails closed (red first).** A backup whose item has an 851-unit `Path` fails to restore on SQL Server with Msg 1946, and the database afterwards holds exactly the rows it held before.
 5. **Warning, not error, at migration.** Applying the baseline logs no error, and the 18 over-budget indexes exist.
 6. **If (b) is taken.** Every `Path` predicate the shared code sends seeks on SQL Server (captured SQL and plan), and a 5000-character `Path` is saved.
+
+## Amendments (X11 design, 2026-10-16)
+
+- **T1. Correction: `DbException.IsTransient` is not set by every driver.** Option (S) said that SqlClient, Npgsql, MySqlConnector and Microsoft.Data.Sqlite all set it. At the pinned versions, only two of them override it.
+  - **Evidence.** The driver source at the exact tags (`dotnet/efcore` v10.0.12, `npgsql` v10.0.3, `MySqlConnector` 2.6.2, `dotnet/SqlClient` v6.1.6), read during the X11 design, and a reflection probe that builds real exception instances. The probe reported:
+    - **The declaring type of `IsTransient`:** `System.Data.Common.DbException` for `SqliteException` and `SqlException`, and the drivers' own types for `NpgsqlException`, `PostgresException` and `MySqlException`.
+    - **SQLite:** `SqliteException` with result codes 1, 5, 6, 10, 11, 13, 14 and 19 (and 19 with extended code 1811) is `False` throughout.
+    - **PostgreSQL:** `PostgresException` 54000, 23503, 23505, 23514, P0001 and 57014 are `False`. 40001, 40P01, 08006, 53300, 57P01, 55P03 and 53100 are `True`. `NpgsqlException` wrapping an `IOException`, a `SocketException` or a `TimeoutException` is `True`.
+    - **MySQL:** `MySqlException` 1452, 3819, 1644, 1062, −1 (`CommandTimeoutExpired`), 1317, 1406 and 1048 are `False`. 1213, 1205 and 1042 are `True`.
+    - **Error codes:** `DbException.ErrorCode` was −2147467259 (E_FAIL) in every case.
+  - **Supplementary.** The probe's output was kept at `/tmp/x11/evidence/istransient-probe.txt`, which does not outlive the machine's temporary files.
+  - **Microsoft.Data.Sqlite 10.0.12** does not override it, so it is always `false`. That includes `SQLITE_BUSY` (5) and `SQLITE_LOCKED` (6), where the driver's busy loop ends when `CommandTimeout` runs out, and the storage errors 10, 11, 13 and 14.
+  - **Microsoft.Data.SqlClient 6.1.6** does not override it, so it is always `false`, including for a command time-out (number −2) and for transport errors.
+  - **Npgsql 10.0.3** overrides it.
+    - `NpgsqlException` is `true` when its inner exception is an `IOException`, a `SocketException` or a `TimeoutException`, so client time-outs and lost connections are `true`.
+    - `PostgresException` matches exact SQLSTATEs: 08xxx, 40001, 40P01, 53xxx, 55000/55006/55P03, 57P01-03/05, 58000 and 58030. The constraint and data errors (class 23, 54000, P0001) are `false`.
+  - **MySqlConnector 2.6.2** overrides it, and it is `true` only for 1040, 1205, 1213, 1042 and 1614. Its command time-out (`CommandTimeoutExpired`, −1) and the server's 3024 are `false`.
+  - `DbException.ErrorCode` is E_FAIL on Microsoft.Data.Sqlite, Npgsql and MySqlConnector, and a constant on SqlClient. Only Npgsql and MySqlConnector set `SqlState`, and MySqlConnector's is the server's coarse state, `null` for errors the client raises itself.
+  - So `IsTransient == false` alone would treat a busy or failing SQLite database, a MySQL command time-out, and every SqlClient error as an error of a row.
+- **T2. The trigger as X11 builds it.** The provider decides which errors are data errors, through a new member `IJellyfinDatabaseProvider.IsDataError(Exception)`.
+  - **What it means.** The engine refused the values of the rows written: a constraint, a trigger, or a limit of the engine. So the same rows fail every time, and the other rows of the unit of work can be written without them.
+  - **The default is `false`.** A provider that does not classify keeps today's all-or-nothing save.
+  - **Where the knowledge lives.** The classifiers are in the providers, so shared code stays free of engine checks:
+    - SQLite counts result codes 19 (which includes RAISE in a trigger), 18 and 20.
+    - PostgreSQL counts SQLSTATE classes 22, 23 and 54, and P0001.
+    - MySQL and MariaDB count a list of constraint and data error numbers.
+  - **The shared trigger.** The fallback runs when all of these hold:
+    - the batch has more than one item;
+    - the exception is a `DbUpdateException`;
+    - nothing in its chain is an `OperationCanceledException`, `TimeoutException`, `IOException` or `SocketException`;
+    - its innermost `DbException` is not transient;
+    - the provider calls it a data error;
+    - on the fork, it is also not a retryable write conflict.
+  - **SQL Server.** It has no classifier until step 27, so (S) does nothing there until then.
+- **T3. (S) is opt-in, and reports what it skipped.**
+  - `SaveItems` still saves all of the items or none.
+  - A new member, `IItemPersistenceService.SaveItemsSkippingFailures`, returns the ids of the items it did not save. Its default implementation calls `SaveItems` and returns none.
+  - `LibraryManager.CreateItems` and `UpdateItemsAsync` use it. They cache, and raise `ItemAdded` or `ItemUpdated` for, only the items saved, so an item that does not exist is never handed out.
+  - A second member with a default implementation, `ILibraryManager.CreateItemsSkippingFailures`, reports which new items were left out. The folder scan uses it, and it does not act on a new item that was left out:
+    - it does not hand another video's alternate versions to it;
+    - it does not demote a video below it;
+    - it does not refresh it or validate its children.
+
+    A primary that the left-out item was to replace stays as it is.
+  - Every other caller keeps today's behaviour: the audio normalization task, the migrations, and plugins.
+  - **What a fallback cut short leaves.** A failure that is not a data error, or a cancellation, can end the fallback part way. The units saved before it stay saved, but they are neither cached nor announced. A later scan finds them in the database.
+- **T4. The units and the stop rules.**
+  - **Units.** The fallback saves units, not single items. A unit is an item together with the items of the batch that refer to it, or that it refers to, by `ParentId` or `OwnerId`. That way a video and the alternate versions `CreateItems` appends to it still resolve their links within one transaction.
+  - **A failed unit.** If a unit of several items fails, its items are saved one at a time in list order. An item whose parent or owner in the batch was not saved is skipped. A video saved before its alternate versions is saved again once they are, so that it links to the ones that were saved.
+  - **Stop early.** If the first three counted saves fail with the same innermost exception type and `SqlState`, the batch's own exception is thrown again. Provider error codes are not compared. A client without a SQLSTATE (SQLite, SqlClient) therefore has any early failures count as alike, which errs towards throwing.
+  - **Write conflicts.** On the fork, a write conflict that the retry policy gave up on stays the failure of the batch, as before, even where the provider also counts it a data error. Examples are SQLite UNIQUE, PostgreSQL 23505 and MySQL 1062.
+    - **During the fallback.** A unit that meets such a conflict ends the whole fallback with that exception, and the units saved before it stay committed. This is the interrupted-fallback rule of T3.
+    - **SQLite.** The fork's SQLite provider counts every primary-key and unique violation as a write conflict. So on the fork a unique violation that comes from an item's own data never reaches the fallback either, and it stays all or nothing, as before.
+- **T5. Decision 8's pin now exists.** X11's conformance-kit row `BatchSaveConformance.SaveItemsSkippingFailures_OneItemWithAPathOverTheIndexKeyLimit_SavesEveryItem` pins the PostgreSQL gap as the known gap `PG-PATH-INDEX-KEY`, asserting `54000` on `IX_BaseItems_Path` (ADR-0009 L7). X12 removes it.
+  - **Nothing saved.** If no item could be saved at all, the batch's exception is also thrown again.

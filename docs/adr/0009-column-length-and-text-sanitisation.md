@@ -39,7 +39,7 @@
 - **NUL (a, remove).** `JellyfinDbContext.SaveChanges`/`SaveChangesAsync` call a `SanitizeStrings()` step next to `HandleConcurrencyToken()` (`JellyfinDbContext.cs:265,291`). It strips U+0000 from every string property of `Added`/`Modified` entries, for all providers.
   - `LikePatterns` (ADR-0005) and `GetCleanValue` also strip NUL from query input.
   - Rule: user-sourced strings never go through `ExecuteUpdate` or raw SQL, because those bypass the hook.
-- **Long indexed values:** accepted as a known gap for v1 (`KnownGaps` `ADR-0009/G1`). Options for later: a hash index or an `md5(...)` expression index for equality-only lookups, chosen after checking which `Path` predicates need btree order.
+- **Long indexed values:** accepted as a known gap for v1 (`KnownGaps` `ADR-0009/G1`). Its pinning test is the long-`Path` row of the conformance kit (`BatchSaveConformance.SaveItemsSkippingFailures_OneItemWithAPathOverTheIndexKeyLimit_SavesEveryItem`), marked with the known gap `PG-PATH-INDEX-KEY` (X11, L7). Options for later: a hash index or an `md5(...)` expression index for equality-only lookups, chosen after checking which `Path` predicates need btree order.
 
 ## Consequences
 
@@ -168,9 +168,12 @@ The step 19 gate showed that L2's premise is false for several key-class columns
 
 ## Amendments (SQL Server spike, 2026-10-16)
 
-- **L7. G1 costs a whole folder, not one row, and it is not pinned (cross-reference).**
+- **L7. G1 costs a whole folder, not one row, and it is now pinned (cross-reference).**
   - **The batch.** A folder's new items are saved in one transaction. One `Path` over 2704 bytes on PostgreSQL therefore saves none of them: measured `54000` at 3024 bytes, 0 of 50 saved. The scan then skips that folder's subfolders on every pass.
   - **ADR-0012 decides the remedy.** X11 saves item by item after a failed batch, so the cost becomes the one item, or an over-long folder's subtree.
   - **The parity gap stays.** The item itself still never saves on PostgreSQL, while SQLite saves it. ADR-0012 decision 8 records this as a PostgreSQL known gap.
-  - **Not pinned yet.** At `feature/multi-db` no `KnownGaps` entry or test pins G1. The `BaseItem_PathOver2704Bytes` test of "Tests required (b)" was not found. Follow-up X12 (`pr-plan.md`, B34) closes or pins it, and adds the pinning test first.
+  - **Pinned by X11.** At `5717472263` no `KnownGaps` entry or test pinned G1, and the `BaseItem_PathOver2704Bytes` test of "Tests required (b)" was not found. X11 adds the pinning test: the long-`Path` row of the conformance kit (`BatchSaveConformance.SaveItemsSkippingFailures_OneItemWithAPathOverTheIndexKeyLimit_SavesEveryItem`), marked with the known gap `PG-PATH-INDEX-KEY`.
+    - The row saves a batch of ten new items through the server, with one `Path` of 3000 random letters. It asserts that the other nine are stored on every engine, and inside the gap that the long-path item is stored too.
+    - On PostgreSQL the gap's matcher accepts only `54000` naming `IX_BaseItems_Path`. That is the error the fallback logged for the item, which the row throws again.
+    - Follow-up X12 (`pr-plan.md`, B34) closes G1 and removes that `KnownGaps` entry. The marker forces the removal: once PostgreSQL saves the path, the row fails with "remove the KnownGap marker".
 
