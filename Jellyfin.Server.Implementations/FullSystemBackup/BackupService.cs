@@ -9,6 +9,7 @@ using System.Text.Json.Serialization;
 using System.Threading;
 using System.Threading.Tasks;
 using Jellyfin.Database.Implementations;
+using Jellyfin.Server.Implementations.DatabaseConfiguration;
 using Jellyfin.Server.Implementations.StorageHelpers;
 using Jellyfin.Server.Implementations.SystemBackupService;
 using MediaBrowser.Controller;
@@ -29,6 +30,12 @@ namespace Jellyfin.Server.Implementations.FullSystemBackup;
 public class BackupService : IBackupService
 {
     private const string ManifestEntryName = "manifest.json";
+
+    /// <summary>
+    /// The file in the configuration directory that holds the database configuration of this server. It says which
+    /// database this server runs on, not what is in it, so a restore leaves it alone.
+    /// </summary>
+    private const string DatabaseConfigurationFileName = DatabaseConfigurationStore.StoreKey + ".xml";
     private readonly ILogger<BackupService> _logger;
     private readonly IDbContextFactory<JellyfinDbContext> _dbProvider;
     private readonly IServerApplicationHost _applicationHost;
@@ -128,11 +135,12 @@ public class BackupService : IBackupService
                 throw new NotSupportedException($"The loaded archive '{archivePath}' is made for a newer version of Jellyfin ({manifest.ServerVersion}) and cannot be loaded in this version.");
             }
 
-            void CopyDirectory(string source, string target, string[]? exclude = null)
+            void CopyDirectory(string source, string target, string[]? exclude = null, string[]? keep = null)
             {
                 var fullSourcePath = NormalizePathSeparator(Path.GetFullPath(source) + Path.DirectorySeparatorChar);
                 var fullTargetRoot = Path.GetFullPath(target) + Path.DirectorySeparatorChar;
                 var excludePaths = exclude?.Select(e => $"{source}/{e}/").ToArray();
+                var keepPaths = keep?.Select(k => Path.GetFullPath(Path.Combine(target, k))).ToArray();
                 foreach (var item in zipArchive.Entries)
                 {
                     var sourcePath = NormalizePathSeparator(Path.GetFullPath(item.FullName));
@@ -150,6 +158,14 @@ public class BackupService : IBackupService
                         continue;
                     }
 
+                    // Compare the path the entry would be written to, not its name: an entry such as 'Config/users/../database.xml'
+                    // or one in another casing ends up on the same file.
+                    if (keepPaths is not null && keepPaths.Contains(targetPath, StringComparer.OrdinalIgnoreCase))
+                    {
+                        _logger.LogInformation("Keep {File} of this server; the archive's copy is not restored.", targetPath);
+                        continue;
+                    }
+
                     _logger.LogInformation("Restore and override {File}", targetPath);
 
                     Directory.CreateDirectory(Path.GetDirectoryName(targetPath)!);
@@ -157,7 +173,7 @@ public class BackupService : IBackupService
                 }
             }
 
-            CopyDirectory("Config", _applicationPaths.ConfigurationDirectoryPath);
+            CopyDirectory("Config", _applicationPaths.ConfigurationDirectoryPath, keep: [DatabaseConfigurationFileName]);
             CopyDirectory("Data", _applicationPaths.DataPath, exclude: ["metadata", "metadata-default"]);
             CopyDirectory("Root", _applicationPaths.RootFolderPath);
             CopyDirectory("Data/metadata", _applicationPaths.InternalMetadataPath);

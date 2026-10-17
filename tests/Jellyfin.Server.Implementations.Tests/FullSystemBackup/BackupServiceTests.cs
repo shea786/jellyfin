@@ -43,6 +43,23 @@ public sealed class BackupServiceTests : DatabaseTestFixture
     private const string RoutineOnlyInTargetId = "20250101130000_RoutineOnlyInTarget";
     private const string ForeignSchemaMigrationId = "20250101140000_SchemaMigrationOfAnotherEngine";
     private const string RemovedRoutineId = "20250101150000_RoutineThisServerNoLongerHas";
+
+    private const string ArchivedDatabaseConfiguration = """
+        <?xml version="1.0" encoding="utf-8"?>
+        <DatabaseConfiguration xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema">
+          <DatabaseProviderType>Postgres</DatabaseProviderType>
+          <CustomProviderOptions>Host=archive.internal;Database=jellyfin;Username=jellyfin;Password=archive</CustomProviderOptions>
+        </DatabaseConfiguration>
+        """;
+
+    private const string ThisServerDatabaseConfiguration = """
+        <?xml version="1.0" encoding="utf-8"?>
+        <DatabaseConfiguration xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema">
+          <DatabaseProviderType>Postgres</DatabaseProviderType>
+          <CustomProviderOptions>Host=target.internal;Database=jellyfin;Username=jellyfin;Password=target</CustomProviderOptions>
+        </DatabaseConfiguration>
+        """;
+
     private const int SqliteConstraintUnique = 2067;
 
     private static readonly Guid MovieId = Guid.Parse("11111111-1111-1111-1111-111111111111");
@@ -1256,6 +1273,152 @@ public sealed class BackupServiceTests : DatabaseTestFixture
         ids.AddRange((await ctx.AccessSchedules.AsNoTracking().OrderBy(e => e.Id).Select(e => e.Id).ToListAsync(cancellationToken).ConfigureAwait(false)).Select(e => $"AccessSchedule {e}"));
         ids.AddRange((await ctx.Devices.AsNoTracking().OrderBy(e => e.Id).Select(e => e.Id).ToListAsync(cancellationToken).ConfigureAwait(false)).Select(e => $"Device {e}"));
         return ids;
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task RestoreBackupAsync_WithDatabaseConfigurationInTheArchive_LeavesTheServerConfigurationUntouched(bool database)
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        await WriteConfigurationFileAsync("system.xml", "<system />", cancellationToken).ConfigureAwait(true);
+        await WriteConfigurationFileAsync("database.xml", ThisServerDatabaseConfiguration, cancellationToken).ConfigureAwait(true);
+        var manifest = await CreateBackupService().CreateBackupAsync(new BackupOptionsDto { Database = database }).ConfigureAwait(true);
+        await AddEntryAsync(manifest.Path, "Config/database.xml", ArchivedDatabaseConfiguration, cancellationToken).ConfigureAwait(true);
+        var databaseConfigurationPath = Path.Combine(_configurationDirectoryPath, "database.xml");
+        var bytesBefore = await File.ReadAllBytesAsync(databaseConfigurationPath, cancellationToken).ConfigureAwait(true);
+
+        await CreateBackupService().RestoreBackupAsync(manifest.Path).ConfigureAwait(true);
+
+        Assert.Equal(bytesBefore, await File.ReadAllBytesAsync(databaseConfigurationPath, cancellationToken).ConfigureAwait(true));
+        Assert.Single(_logger.Entries, e => e.Level == LogLevel.Information && e.Message.StartsWith("Keep ", StringComparison.Ordinal) && e.Message.Contains("database.xml", StringComparison.Ordinal));
+    }
+
+    [Theory]
+    [InlineData("Config/DATABASE.XML")]
+    [InlineData("Config/Database.xml")]
+    [InlineData("Config/users/../database.xml")]
+    public async Task RestoreBackupAsync_WithDatabaseConfigurationInTheArchiveUnderAnotherCasing_LeavesTheServerConfigurationUntouched(string entryName)
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        await WriteConfigurationFileAsync("system.xml", "<system />", cancellationToken).ConfigureAwait(true);
+        await WriteConfigurationFileAsync("database.xml", ThisServerDatabaseConfiguration, cancellationToken).ConfigureAwait(true);
+        var manifest = await CreateBackupService().CreateBackupAsync(new BackupOptionsDto { Database = false }).ConfigureAwait(true);
+        await AddEntryAsync(manifest.Path, entryName, ArchivedDatabaseConfiguration, cancellationToken).ConfigureAwait(true);
+        var databaseConfigurationPath = Path.Combine(_configurationDirectoryPath, "database.xml");
+        var bytesBefore = await File.ReadAllBytesAsync(databaseConfigurationPath, cancellationToken).ConfigureAwait(true);
+        var filesBefore = ListConfigurationFiles();
+
+        await CreateBackupService().RestoreBackupAsync(manifest.Path).ConfigureAwait(true);
+
+        // A copy under another casing must not appear beside the file (a file system that tells the casings apart would keep both).
+        Assert.Equal(filesBefore, ListConfigurationFiles());
+        Assert.Equal(bytesBefore, await File.ReadAllBytesAsync(databaseConfigurationPath, cancellationToken).ConfigureAwait(true));
+    }
+
+    [Fact]
+    public async Task RestoreBackupAsync_WithDatabaseConfigurationInTheArchive_StillRestoresTheOtherConfiguration()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var userFile = Path.Combine("users", "0f4e5a50d3c64f6c8d8a3f2c4b1a9e77", "x.xml");
+
+        // A user directory may hold a file of the same name; only the one in the configuration directory itself is kept.
+        var userDatabaseFile = Path.Combine("users", "0f4e5a50d3c64f6c8d8a3f2c4b1a9e77", "database.xml");
+        string[] files = ["system.xml", "network.xml", "encoding.xml", userFile, userDatabaseFile];
+        foreach (var file in files)
+        {
+            await WriteConfigurationFileAsync(file, "<archived />", cancellationToken).ConfigureAwait(true);
+        }
+
+        await WriteConfigurationFileAsync("database.xml", ThisServerDatabaseConfiguration, cancellationToken).ConfigureAwait(true);
+        var manifest = await CreateBackupService().CreateBackupAsync(new BackupOptionsDto { Database = false }).ConfigureAwait(true);
+        await AddEntryAsync(manifest.Path, "Config/database.xml", ArchivedDatabaseConfiguration, cancellationToken).ConfigureAwait(true);
+        foreach (var file in files)
+        {
+            await WriteConfigurationFileAsync(file, "<changed after the backup />", cancellationToken).ConfigureAwait(true);
+        }
+
+        await CreateBackupService().RestoreBackupAsync(manifest.Path).ConfigureAwait(true);
+
+        foreach (var file in files)
+        {
+            Assert.Equal(
+                "<archived />",
+                await File.ReadAllTextAsync(Path.Combine(_configurationDirectoryPath, file), cancellationToken).ConfigureAwait(true));
+        }
+    }
+
+    [Fact]
+    public async Task RestoreBackupAsync_WithAnArchiveFromBeforeThisChange_DoesNotApplyItsDatabaseConfiguration()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        await WriteConfigurationFileAsync("system.xml", "<archived />", cancellationToken).ConfigureAwait(true);
+        await WriteConfigurationFileAsync("database.xml", ThisServerDatabaseConfiguration, cancellationToken).ConfigureAwait(true);
+        var manifest = await CreateBackupService().CreateBackupAsync(new BackupOptionsDto { Database = false }).ConfigureAwait(true);
+
+        // What a server made before this change wrote: the same engine version and the database configuration among the files.
+        const string ManifestOfAnOlderServer = """{"ServerVersion":"10.11.0","BackupEngineVersion":"0.2.0","DateCreated":"2026-01-01T00:00:00+00:00","DatabaseTables":[],"Options":{"Metadata":false,"Trickplay":false,"Subtitles":false,"Database":false}}""";
+        await AddEntryAsync(manifest.Path, "manifest.json", ManifestOfAnOlderServer, cancellationToken).ConfigureAwait(true);
+        await AddEntryAsync(manifest.Path, "Config/database.xml", ArchivedDatabaseConfiguration, cancellationToken).ConfigureAwait(true);
+        await WriteConfigurationFileAsync("system.xml", "<changed after the backup />", cancellationToken).ConfigureAwait(true);
+        var databaseConfigurationPath = Path.Combine(_configurationDirectoryPath, "database.xml");
+        var bytesBefore = await File.ReadAllBytesAsync(databaseConfigurationPath, cancellationToken).ConfigureAwait(true);
+
+        await CreateBackupService().RestoreBackupAsync(manifest.Path).ConfigureAwait(true);
+
+        Assert.Equal(bytesBefore, await File.ReadAllBytesAsync(databaseConfigurationPath, cancellationToken).ConfigureAwait(true));
+        Assert.Equal(
+            "<archived />",
+            await File.ReadAllTextAsync(Path.Combine(_configurationDirectoryPath, "system.xml"), cancellationToken).ConfigureAwait(true));
+    }
+
+    [Fact]
+    public async Task RestoreBackupAsync_WhenThisServerHasNoDatabaseConfiguration_DoesNotCreateOne()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        await WriteConfigurationFileAsync("system.xml", "<system />", cancellationToken).ConfigureAwait(true);
+        var manifest = await CreateBackupService().CreateBackupAsync(new BackupOptionsDto { Database = false }).ConfigureAwait(true);
+        await AddEntryAsync(manifest.Path, "Config/database.xml", ArchivedDatabaseConfiguration, cancellationToken).ConfigureAwait(true);
+        var databaseConfigurationPath = Path.Combine(_configurationDirectoryPath, "database.xml");
+        Assert.False(File.Exists(databaseConfigurationPath));
+
+        await CreateBackupService().RestoreBackupAsync(manifest.Path).ConfigureAwait(true);
+
+        Assert.False(File.Exists(databaseConfigurationPath));
+    }
+
+    private static async Task AddEntryAsync(string archivePath, string entryName, string content, CancellationToken cancellationToken)
+    {
+        using var archive = await ZipFile.OpenAsync(archivePath, ZipArchiveMode.Update, cancellationToken).ConfigureAwait(false);
+
+        // An archive made by a server that already leaves the file out has no such entry; one made by an older server has it.
+        foreach (var existing in archive.Entries.Where(e => string.Equals(e.FullName, entryName, StringComparison.Ordinal)).ToList())
+        {
+            existing.Delete();
+        }
+
+        var entry = archive.CreateEntry(entryName);
+        var stream = await entry.OpenAsync(cancellationToken).ConfigureAwait(false);
+        await using (stream.ConfigureAwait(false))
+        using (var writer = new StreamWriter(stream))
+        {
+            await writer.WriteAsync(content.AsMemory(), cancellationToken).ConfigureAwait(false);
+        }
+    }
+
+    private async Task WriteConfigurationFileAsync(string relativePath, string content, CancellationToken cancellationToken)
+    {
+        var path = Path.Combine(_configurationDirectoryPath, relativePath);
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        await File.WriteAllTextAsync(path, content, cancellationToken).ConfigureAwait(false);
+    }
+
+    private List<string> ListConfigurationFiles()
+    {
+        return Directory.EnumerateFiles(_configurationDirectoryPath, "*", SearchOption.AllDirectories)
+            .Select(file => Path.GetRelativePath(_configurationDirectoryPath, file))
+            .Order(StringComparer.Ordinal)
+            .ToList();
     }
 
     private BackupService CreateBackupService(DbContextOptions<JellyfinDbContext>? dbOptions = null)
