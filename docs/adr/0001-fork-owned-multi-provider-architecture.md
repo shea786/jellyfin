@@ -28,7 +28,7 @@ Constraint: we **extend** the existing seam. We do not build a parallel one. Eve
 - **Keys.** Keys use the pattern `Jellyfin-<Engine>`: `Jellyfin-PostgreSQL`, and later `Jellyfin-MySQL` and `Jellyfin-SqlServer`. Lookup is case-insensitive, which is unchanged.
 - **Registration (option 1a).** Add `yield return typeof(PostgresDatabaseProvider);` to `DatabaseProviderTypes()`. The list stays explicit and trimming-safe. Third parties keep using `PLUGIN_PROVIDER`.
 - **Config surface.** Reuse `database.xml` as-is: `DatabaseType=Jellyfin-PostgreSQL`, `CustomProviderOptions/ConnectionString` holds a native Npgsql connection string, and `Options` holds provider tunables such as `command-timeout`. Built-in providers ignore `PluginName` and `PluginAssembly`, which may be empty. The XML schema does not change.
-- **Secrets (option 3b).** Configuration key `database:ConnectionString` (env `JELLYFIN_DATABASE__CONNECTIONSTRING`) overrides `CustomProviderOptions.ConnectionString`. `AddJellyfinDbContext` applies the override in memory, **after** the write-back at `:97-102`, so it is never persisted. There is no CLI flag, because process listings would leak it. Npgsql's own `PGPASSWORD` and `PGPASSFILE` also work, and that is the recommended route. Providers must never log a password; Postgres logs the connection string with `Password` removed.
+- **Secrets (option 3b).** Configuration key `database:ConnectionString` (env `JELLYFIN_DATABASE__CONNECTIONSTRING`) overrides `CustomProviderOptions.ConnectionString`. `AddJellyfinDbContext` applies the override in memory, **after** the write-back at `:97-102`, so it is never persisted. There is no CLI flag, because process listings would leak it. Npgsql's own `PGPASSWORD` and `PGPASSFILE` also work, and that is the recommended route. Providers must never log a password; Postgres logs the connection string with `Password` removed. A full system backup archive never carries `database.xml`, and a restore never overwrites the target host's `database.xml` (ADR-0003 R6, Amendment S1 below).
 - **Dialect policy (option 2c).** Shared code (repositories, managers, routines) must not branch on the provider. Differences are handled in this order:
   1. Provider-neutral LINQ rewrites, for example the Guid MIN rewrite (ADR-0007).
   2. Model-level handling in the provider's `OnModelCreating` and `ConfigureConventions`: collations, converters, column types (ADR-0004/0005/0009).
@@ -157,3 +157,11 @@ The project owner asked what a contributor has to do per database once this land
 - **L3. What is not changed.**
   - `database.xml` is not rewritten. Editing it to `NoLock` is the whole upgrade.
   - The shared `NoLock`, `Pessimistic` and `Optimistic` behaviours are unchanged, and so is the SQLite hazard of `Pessimistic` (a thread-affine lock held across an `await`), which stays on the owner's upstream-notes list (pr-plan B37, B38).
+
+## Amendments (X14, 2026-10-17)
+
+- **S1. Full system backup and restore leave `database.xml` alone.**
+  - **Archive contents.** `CreateBackupAsync` filters out `DatabaseConfigurationStore.DatabaseConfigurationFileName` (`database.xml`) when walking `ConfigurationDirectoryPath`. Backup archives never carry a `database.xml`.
+  - **Target protection.** `RestoreBackupAsync` checks archive paths against `DatabaseConfigurationStore.DatabaseConfigurationFileName` (case-insensitively). Any archive entry matching `database.xml` is skipped and cannot overwrite the target host's database configuration.
+  - **Security and cross-engine portability.** This ensures that secrets in `database.xml` (passwords, connection strings, host credentials) are never exfiltrated into backup zip archives, and restoring an archive onto another host preserves that host's database provider, credentials, and settings.
+

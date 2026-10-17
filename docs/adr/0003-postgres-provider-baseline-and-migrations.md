@@ -179,3 +179,13 @@ The work runs in one transaction where the engine allows it. On MySQL, `TRUNCATE
 - **S4. Archive restore on a provider without transactional migrations (closes pr-plan B14).** `BackupService` creates the migration history table before the restore transaction, so the `CREATE TABLE` does not commit it implicitly. Before the first file is written it refuses a restore when the marker exists, or when the provider's migrations are not transactional and migrations are pending. A refused restore has changed nothing.
   - **The cost:** a fresh MySQL or MariaDB database must be migrated once, by starting the server or running `--mode MigrateSystem`, before `--restore-archive` can be used. The how-to says so.
 - **S5. S2's `PurgeDatabase` line for MySQL/MariaDB is superseded** by ADR-0011 F4: rows are deleted, not truncated, because a table that another table references cannot be truncated.
+
+## Amendments (step X14 gate, 2026-10-17)
+
+- **R6. The target keeps its own database.xml. A backup archive never carries one.**
+  - **The defect:** full system backups previously archived every file under `ConfigurationDirectoryPath`, including `database.xml`. On restore, unpacking these files overwrote the running server's `database.xml`. In a cross-engine scenario (e.g. restoring an SQLite backup archive on a PostgreSQL server), this silently reverted the server configuration to SQLite, while leaving the database backend running PostgreSQL; in a cross-environment restore between servers running the same provider, it replaced host connection strings, host credentials, and encryption options with those of the source server.
+  - **The fix (upstream commits ecdec346ed and 0bdd5ea672, cherry-picked into fork):**
+    - `RestoreBackupAsync` skips any entry in the archive whose resolved relative path matches `DatabaseConfigurationStore.DatabaseConfigurationFileName` (`database.xml`), case-insensitively (`StringComparison.OrdinalIgnoreCase`). Any archive crafted with path traversal or variations in casing cannot overwrite the target host's database configuration.
+    - `CreateBackupAsync` skips `database.xml` when collecting files from `ConfigurationDirectoryPath`. Newly created archives never contain `database.xml`.
+  - **Cross-engine conformance:** covered by cross-engine test F1 (`RestoreBackupAsync_WithTheDatabase_KeepsTheDatabaseConfigurationOfThisServer`) in `BackupServiceTests.cs`, ensuring that restoring an archive containing an archived database configuration leaves the host's existing `database.xml` unmodified byte-for-byte and retains the database state.
+
