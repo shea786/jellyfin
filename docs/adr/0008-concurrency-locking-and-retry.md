@@ -10,10 +10,10 @@
   - The app increments it in `OnSavingChanges` (`User.cs:345`, `ActivityLog.cs:120`), called from `JellyfinDbContext.cs:314-322`.
   - It is **not** `IsRowVersion`. Npgsql maps `uint` to `bigint` (verified DDL `"RowVersion" bigint NOT NULL`), and EF's `WHERE RowVersion = @orig` works the same way on both engines.
 - **Locking.**
-  - The default is `NoLock` (`ServiceCollectionExtensions.cs:97-101`).
+  - The default is `NoLock` (`DatabaseLockingBehaviorTypes.cs:11`, and the fallback configuration at `ServiceCollectionExtensions.cs:141-146`).
   - `OptimisticLockBehavior` retries only on SQLite message text (`OptimisticLockBehavior.cs:56-65`).
   - `Pessimistic` is a process-wide reader/writer lock.
-  - ADR-0001 makes `NoLock` the PG default and logs a warning for the other modes.
+  - ADR-0001 makes `NoLock` the default for every provider. At the time this was written it also said that the other modes are honoured with a warning; ADR-0001 L1 and S8 at the end of this ADR correct that.
 - **Read-then-insert races.**
   - `ItemPersistenceService.cs:376-388` reads the `ItemValues` that exist, then inserts the missing ones inside the transaction at `:334`, against the unique `(Type, Value)` index (`ItemValuesConfiguration.cs:17`). Under PG's `READ COMMITTED`, the losing writer blocks and then fails with `23505`. SQLite with `NoLock` also fails the losing save, with BUSY or a UNIQUE error.
   - `ReconcileUserDataAsync` deletes and re-inserts rows keyed by `(ItemId, UserId, CustomDataKey)` (`UserDataConfiguration.cs:15`).
@@ -136,3 +136,15 @@
     - A transaction that names a level keeps it.
     - The four session settings the queries rely on, and a save under each locking behaviour read back at READ COMMITTED.
     - The RCSI warning: a database that reads with locks (RCSI off) is warned of and told what to run, and one that reads from row versions is not. Also the default-collation warning, and no throw when the database cannot be read.
+
+## Amendments (X13, 2026-10-17)
+
+- **S8. Locking: `Pessimistic` is refused on a provider that does not support it. This supersedes the "Locking." context bullets above.**
+  - The default is still `NoLock` (`ServiceCollectionExtensions.cs`, the `switch` on `LockingBehavior`).
+  - `OptimisticLockBehavior` still retries only on SQLite message text, and a server provider that is set to `Optimistic` accepts it. No provider reads `LockingBehavior`, and `OptimisticLockBehavior.Initialise` logs at Information ("The database locking mode has been set to: Optimistic.", `OptimisticLockBehavior.cs:83`), not a warning.
+  - `Pessimistic` is a process-wide reader/writer lock, and the server now **refuses to start** with it on PostgreSQL, MySQL/MariaDB and SQL Server (`SupportsPessimisticLocking` is `false` there; ADR-0001 L1 and L2). The check is `EnsureLockingBehaviorIsSupported`, called right after the provider is created, with the message "LockingBehavior in database.xml is Pessimistic, which the database provider '…' does not support. Set LockingBehavior to NoLock, the default, or Optimistic."
+  - ADR-0001 L1 holds the reason: a thread-affine `ReaderWriterLockSlim` held across an `await` can deadlock the writers. ADR-0001 previously said that the server provider "honours them but logs a warning". For `Pessimistic` that is no longer true (it is refused), and for `Optimistic` the log line was always Information, not a warning.
+- **S9. The tests that ran a server engine under `Pessimistic` dropped that row.**
+  - **SQL Server.** `SqlServerSessionTestsBase.SaveChanges_WithEachLockingBehaviour_RunsAtReadCommittedAndIsReadBack` (S7) no longer has the `PessimisticLockBehavior` row. The test is now asynchronous, because the synchronous form existed only to keep that behaviour from hanging (pr-plan B37). It runs `NoLockBehavior` and `OptimisticLockBehavior`.
+  - **MySQL and MariaDB.** `MySqlTransactionIsolationTests.BeginTransaction_UnderEachLockingBehaviour_RunsAtReadCommitted` (S5) no longer has the `Pessimistic` row, and the matching `switch` arm is gone.
+  - **Why.** A server engine can no longer be started under `Pessimistic`, so the row would test a state the server refuses. `LockingBehaviourRegistrationTests` pins the refusal instead, on every engine, with the exact message parts.
