@@ -1417,6 +1417,34 @@ public sealed class BackupServiceTests : DatabaseTestFixture
         Assert.False(File.Exists(databaseConfigurationPath));
     }
 
+    [Fact]
+    public async Task RestoreBackupAsync_WithTheDatabase_KeepsTheDatabaseConfigurationOfThisServer()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        await SeedAsync(cancellationToken).ConfigureAwait(true);
+        var expected = await SnapshotAsync(cancellationToken).ConfigureAwait(true);
+
+        await WriteConfigurationFileAsync("system.xml", "<system />", cancellationToken).ConfigureAwait(true);
+        await WriteConfigurationFileAsync("database.xml", ThisServerDatabaseConfiguration, cancellationToken).ConfigureAwait(true);
+
+        var backupService = CreateBackupService();
+        var manifest = await backupService.CreateBackupAsync(new BackupOptionsDto()).ConfigureAwait(true);
+        await AddEntryAsync(manifest.Path, "Config/database.xml", ArchivedDatabaseConfiguration, cancellationToken).ConfigureAwait(true);
+        var databaseConfigurationPath = Path.Combine(_configurationDirectoryPath, "database.xml");
+        var bytesBefore = await File.ReadAllBytesAsync(databaseConfigurationPath, cancellationToken).ConfigureAwait(true);
+
+        await using (var ctx = CreateDbContext())
+        {
+            ctx.BaseItems.Add(CreateMovieEntity(Guid.NewGuid(), "Added After Backup"));
+            await ctx.SaveChangesAsync(cancellationToken).ConfigureAwait(true);
+        }
+
+        await backupService.RestoreBackupAsync(manifest.Path).ConfigureAwait(true);
+
+        Assert.Equal(expected, await SnapshotAsync(cancellationToken).ConfigureAwait(true));
+        Assert.Equal(bytesBefore, await File.ReadAllBytesAsync(databaseConfigurationPath, cancellationToken).ConfigureAwait(true));
+    }
+
     private static async Task AddEntryAsync(string archivePath, string entryName, string content, CancellationToken cancellationToken)
     {
         using var archive = await ZipFile.OpenAsync(archivePath, ZipArchiveMode.Update, cancellationToken).ConfigureAwait(false);
