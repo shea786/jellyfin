@@ -113,3 +113,7 @@
 
 - **U1.** Nothing upstream addresses Guid `MIN`/`MAX`.
 - **U2. `WhereOneOrMany` is untested on Postgres.** `JellyfinQueryHelperExtensions.WhereOneOrMany` builds `Enumerable.Contains` over `EF.Parameter`. EF translates it per provider: `json_each` on SQLite, `= ANY(@p)` on Postgres. That should be portable, but nothing tests it. Step 14 adds a Postgres query test covering lists of zero, one and many values.
+
+## Amendments (step 27, 2026-10-16)
+
+- **G4. Correction to G1: `MIN` over `uniqueidentifier` exists.** The SQL Server spike ran it on 2022 CU27 and 2025 CU9 + GDR. The problem G1 guards against is its order: `uniqueidentifier` compares the last six bytes first, so `MIN` picks `10000000-…` before `0FFFFFFF-…`, against the canonical text order of every other engine. G2 stands: SQL Server stores ids as `binary(16)` through `ToByteArray(bigEndian: true)`, and the model test of step 27 asserts that store type for every Guid column.

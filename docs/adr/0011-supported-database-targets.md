@@ -178,3 +178,10 @@
     - **MySQL 9.7.2**, the newest LTS line; 26.7 is an Innovation release and is not tested. Release policy: <https://dev.mysql.com/doc/refman/26.7/en/mysql-releases.html>, <https://blogs.oracle.com/mysql/mysql-9-7-0-lts-is-now-available-expanded-community-capabilities-and-dynamic-data-masking-for-enterprise>.
     - **MariaDB 12.3.3**, a long-term release maintained until June 2029. Release policy: <https://mariadb.org/mariadb-server-12-3-lts-released/>, <https://mariadb.com/docs/release-notes/community-server/12.3/12.3.1>.
   - **Known failure.** MariaDB 11.8 and later can fail with error 1020 until 27a, because MySqlConnector sends REPEATABLE READ for a transaction without a level (pr-plan B30). That also needs a correction to ADR-0008 R3, which 27a records.
+
+## Amendments (step 27, 2026-10-16)
+
+- **F9. SQL Server: what the provider accepts.** SQL Server 2022 (16.0) and later, the on-premises engine and the Linux image. The provider refuses, when a connection opens:
+  - a server that reports a version below 16, with a message that names 2022;
+  - Azure SQL Database (engine edition 5), Azure Synapse (6 and 11) and Azure SQL Managed Instance (8), by the edition of the engine, which it reads once for each server. Azure SQL Database reports version 12 whatever it runs, and Managed Instance reports a version that depends on how it is updated, so the version alone would refuse them with a misleading message, or let them through.
+  - None of these services is a target of this ADR, and none has CI. Supporting one later is a decision of its own, with its own CI.

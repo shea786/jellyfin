@@ -247,3 +247,15 @@ Two kinds of option are weighed. The storage and index options decide when a key
   - On PostgreSQL, `IX_BaseItems_Path` is a hash index (ADR-0009 L8), so an item whose path a btree entry cannot hold now saves. The known gap `PG-PATH-INDEX-KEY` is removed.
   - This is not option (b) for SQL Server. A PostgreSQL hash index has no key-size limit and needs no query rewrite, whereas SQL Server's (b) needs a computed column and a provider interceptor.
   - The new 10,000-byte kit row also exceeds SQL Server's `nvarchar(4000)`, so step 27 marks it with the SQL Server gap `ADR-0009/G2` together with the 3000-character row.
+
+## Amendments (step 27, 2026-10-16)
+
+- **T7. The SQL Server gaps as step 27 builds them, and a correction to T6.**
+  - Decision 1's entry is the known gap `SQLSERVER-INDEX-KEY-1700` (`ADR-0009/G2`). Its matcher accepts only a `SqlException` that carries Msg 1946.
+  - Correction to T6: the 10,000-byte kit row is not marked with that gap. A path longer than 4000 characters is refused at its `nvarchar(4000)` column, with Msg 2628, before any index sees it. It has a gap of its own, `SQLSERVER-PATH-OVER-4000`, whose matcher accepts only Msg 2628 on the `Path` column of `BaseItems`. The 3008-character row keeps `SQLSERVER-INDEX-KEY-1700`.
+  - **Tests required, as built:**
+    - 1: `SqlServerIndexKeyBudgetTests`, with no server: the over-budget list in both directions, the room of each listed index, the primary keys within 900 bytes and the unique constraints within 1700.
+    - 2: `IndexKeyLengthTests`, on every engine: a path of 850 and of 851 characters, and the sort name at the room of the series index (659 characters) and one over it. The longer rows are marked with `SQLSERVER-INDEX-KEY-1700`.
+    - 3: `SqlServerIndexKeyBatchAndRestoreTests`. Without (S), no item is saved and the refusal is Msg 1946. With (S), N − 1 items are saved and the error is logged with the path. X11's kit rows cover the other engines. The scan-level variant is not written; it is a follow-up.
+    - 4: the same class. A restore whose archive holds an item with an 851-character path fails with Msg 1946, and the database afterwards holds exactly what it held before, including a row added after the backup that the restore's purge had deleted. A copy of the archive taken before the path was lengthened then restores, and removes that row, so the state compared is one a restore changes.
+    - 5 waits for the baseline (step 28).

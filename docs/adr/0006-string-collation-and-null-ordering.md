@@ -153,3 +153,13 @@
   - **Also found at the base.**
     - Every table, not only the history table, defaulted to the server's case-insensitive collation, because the baseline named only the character set of each table. A column added later without a collation would have taken it.
     - Choosing by .NET type also gave the collation to a string property stored as `json`. MySQL rejects that when it creates the table. The probe model shows both.
+
+## Amendments (step 27, 2026-10-16)
+
+- **C9. SQL Server: the counterpart of C8, and C3's gaps in the ledger.**
+  - **Collation.** A model-finalizing convention (`TextCollationConvention`) gives `Latin1_General_100_BIN2` to every column whose type in the database is a character type, chosen by that type, as C8 does on MySQL. A replaced history repository gives the collation to `__EFMigrationsHistory`. The provider does not change the default of the database, because `ALTER DATABASE … COLLATE` needs exclusive access to it.
+  - **A database with another default** (`SQL_Latin1_General_CP1_CI_AS`, which SQL Server gives a database unless told otherwise) is warned of at startup, with the collation it should have. On such a database, the schema keeps BIN2 on every column, and text that is not a column, the case-insensitive `LIKE`, the purge and the history repository meet no conflict of collations. A test runs all of these on that default.
+  - **C3's gaps** are known gaps keyed to SQL Server:
+    - G1 is `SQLSERVER-TRAILING-SPACE`. Its matcher accepts only Msg 2601 on `IX_ItemValues_Type_Value`, in a test on every engine that two item values that differ only by trailing spaces are both stored and found apart.
+    - Correction to C2 and C4: that test, which C2 asked for and C4 says stays, did not exist before step 27. Step 27 adds it (`TextComparisonTests`); it passes on SQLite, PostgreSQL, MySQL and MariaDB.
+    - G2 is `SQLSERVER-UTF16-ORDER`, for a new test on every engine that sort names outside the Basic Multilingual Plane order by code point. On SQL Server, the test throws a message of its own for exactly the UTF-16 order, and the matcher accepts only that message.
