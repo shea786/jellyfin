@@ -4,10 +4,12 @@ using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Reflection;
+using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using Emby.Server.Implementations.Serialization;
 using Jellyfin.Database.Implementations;
+using Jellyfin.Extensions.Json;
 using Jellyfin.Server.Implementations.SystemBackupService;
 using Jellyfin.Server.Migrations.Stages;
 using Jellyfin.Server.ServerSetupApp;
@@ -59,11 +61,9 @@ internal class JellyfinMigrationService
         _backupService = backupService;
         _jellyfinDatabaseProvider = jellyfinDatabaseProvider;
         _applicationPaths = applicationPaths;
-#pragma warning disable CS0618 // Type or member is obsolete
-        Migrations = [.. typeof(IMigrationRoutine).Assembly.GetTypes().Where(e => typeof(IMigrationRoutine).IsAssignableFrom(e) || typeof(IAsyncMigrationRoutine).IsAssignableFrom(e))
-            .Select(e => (Type: e, Metadata: e.GetCustomAttribute<JellyfinMigrationAttribute>(), Backup: e.GetCustomAttributes<JellyfinMigrationBackupAttribute>()))
-            .Where(e => e.Metadata is not null)
-            .GroupBy(e => e.Metadata!.Stage)
+        Migrations = [.. MigrationRoutineDiscovery.Find()
+            .Select(e => (e.Type, e.Metadata, Backup: e.Type.GetCustomAttributes<JellyfinMigrationBackupAttribute>()))
+            .GroupBy(e => e.Metadata.Stage)
             .Select(f =>
             {
                 var stage = new MigrationStage(f.Key);
@@ -75,12 +75,11 @@ internal class JellyfinMigrationService
                         backupMetadata = item.Backup.Aggregate(MergeBackupAttributes);
                     }
 
-                    stage.Add(new(item.Type, item.Metadata!, backupMetadata));
+                    stage.Add(new(item.Type, item.Metadata, backupMetadata));
                 }
 
                 return stage;
             })];
-#pragma warning restore CS0618 // Type or member is obsolete
     }
 
     private interface IInternalMigration
@@ -90,10 +89,13 @@ internal class JellyfinMigrationService
 
     private HashSet<MigrationStage> Migrations { get; set; }
 
+    private string MigrationInProgressMarkerPath => Path.Combine(_applicationPaths.DataPath, MigrationInProgressMarker.FileName);
+
     public async Task CheckFirstTimeRunOrMigration(IApplicationPaths appPaths, StartupOptions startupOptions)
     {
         var logger = _startupLogger.With(_loggerFactory.CreateLogger<JellyfinMigrationService>()).BeginGroup($"Migration Startup");
         logger.LogInformation("Initialise Migration service.");
+        await EnsureNoMigrationInProgressAsync(logger, !string.IsNullOrWhiteSpace(startupOptions.RestoreArchive)).ConfigureAwait(false);
         var xmlSerializer = new MyXmlSerializer();
         var serverConfig = File.Exists(appPaths.SystemConfigurationFilePath)
             ? (ServerConfiguration)xmlSerializer.DeserializeFromFile(typeof(ServerConfiguration), appPaths.SystemConfigurationFilePath)!
@@ -118,13 +120,15 @@ internal class JellyfinMigrationService
                 await historyRepository.CreateIfNotExistsAsync().ConfigureAwait(false);
                 var appliedMigrations = await dbContext.Database.GetAppliedMigrationsAsync().ConfigureAwait(false);
                 var startupScripts = flatApplyMigrations
-                    .Where(e => !appliedMigrations.Any(f => f != e.BuildCodeMigrationId()))
+                    .Where(e => !appliedMigrations.Contains(e.BuildCodeMigrationId()))
                     .Select(e => (Migration: e.Metadata, Script: historyRepository.GetInsertScript(new HistoryRow(e.BuildCodeMigrationId(), GetJellyfinVersion()))))
                     .ToArray();
                 foreach (var item in startupScripts)
                 {
                     logger.LogInformation("Seed migration {Key}-{Name}.", item.Migration.Key, item.Migration.Name);
+#pragma warning disable JF0002 // The script comes from the history repository of the provider in use, so it is the SQL of that engine.
                     await dbContext.Database.ExecuteSqlRawAsync(item.Script).ConfigureAwait(false);
+#pragma warning restore JF0002
                 }
             }
 
@@ -175,7 +179,9 @@ internal class JellyfinMigrationService
                         foreach (var item in startupScripts)
                         {
                             logger.LogInformation("Migrate migration {Key}-{Name}.", item.Migration.Key, item.Migration.Name);
+#pragma warning disable JF0002 // The script comes from the history repository of the provider in use, so it is the SQL of that engine.
                             await dbContext.Database.ExecuteSqlRawAsync(item.Script).ConfigureAwait(false);
+#pragma warning restore JF0002
                         }
 
                         logger.LogInformation("Rename old migration.xml to migration.xml.backup");
@@ -248,6 +254,7 @@ internal class JellyfinMigrationService
     public async Task<bool> MigrateStepAsync(JellyfinMigrationStageTypes stage, IServiceProvider serviceProvider)
     {
         var logger = _startupLogger.With(_loggerFactory.CreateLogger<JellyfinMigrationService>()).BeginGroup($"Migrate stage {stage}.");
+        await EnsureNoMigrationInProgressAsync(logger, restoringArchive: false).ConfigureAwait(false);
         ICollection<CodeMigration> migrationStage = (Migrations.FirstOrDefault(e => e.Stage == stage) as ICollection<CodeMigration>) ?? [];
 
         var dbContext = await _dbContextFactory.CreateDbContextAsync().ConfigureAwait(false);
@@ -300,6 +307,12 @@ internal class JellyfinMigrationService
                 // Surface generic "Running migration X of Y" progress in the always-visible startup UI header.
                 SetupServer.ReportActivity(StartupActivity.Migration(completedMigrations + 1, completedMigrations + pendingMigrations.Length));
                 var migrationLogger = logger.With(_loggerFactory.CreateLogger(item.Migration.GetType().Name)).BeginGroup($"{item.Key}");
+                var recordsProgress = item.Migration is InternalDatabaseMigration && _jellyfinDatabaseProvider is { SupportsTransactionalMigrations: false };
+                if (recordsProgress)
+                {
+                    await WriteMigrationInProgressMarkerAsync(migrationLogger, item.Key).ConfigureAwait(false);
+                }
+
                 try
                 {
                     migrationLogger.LogInformation("Perform migration {Name}", item.Key);
@@ -311,6 +324,9 @@ internal class JellyfinMigrationService
                     migrationLogger.LogCritical("Error: {Error}", ex.Message);
                     migrationLogger.LogError(ex, "Migration {Name} failed", item.Key);
 
+                    // A provider that cannot undo a failed migration and took no snapshot has nothing to roll back to. It is not asked to,
+                    // as the instruction that follows is the one thing that can be done.
+                    var providerTookNoSnapshot = string.IsNullOrEmpty(_backupKey.JellyfinDb);
                     if (_backupKey != default && _backupService is not null && _jellyfinDatabaseProvider is not null)
                     {
                         if (_backupKey.LibraryDb is not null)
@@ -327,7 +343,7 @@ internal class JellyfinMigrationService
                             }
                         }
 
-                        if (_backupKey.JellyfinDb is not null)
+                        if (_backupKey.JellyfinDb is not null && !(recordsProgress && providerTookNoSnapshot))
                         {
                             migrationLogger.LogInformation("Attempt to rollback JellyfinDb.");
                             try
@@ -354,13 +370,212 @@ internal class JellyfinMigrationService
                         }
                     }
 
+                    if (recordsProgress)
+                    {
+                        migrationLogger.LogCritical(
+                            "Schema migration {Name} did not finish and left {Path} in place, so the database may be partly migrated. {Instruction}",
+                            item.Key,
+                            MigrationInProgressMarkerPath,
+                            providerTookNoSnapshot
+                                ? "This database engine takes no snapshot before a migration, so Jellyfin did not try to roll the database back. "
+                                    + "To continue, restore the database from the backup your database engine took before the upgrade (for example a dump made with mysqldump), "
+                                    + "then delete that file and start Jellyfin again. Restoring a Jellyfin backup archive does not repair the database."
+                                : "If Jellyfin attempted to roll the database back from the snapshot taken before the migration, the log above says whether that succeeded. "
+                                    + "If the database is not in the state before the upgrade, restore the database from the backup your database engine took before the upgrade, "
+                                    + "then delete that file and start Jellyfin again. Restoring a Jellyfin backup archive does not repair the database.");
+                    }
+
                     throw;
+                }
+
+                if (recordsProgress && await IsMigrationRecordedAsync(historyRepository, item.Key).ConfigureAwait(false))
+                {
+                    DeleteMigrationInProgressMarker(migrationLogger, item.Key);
                 }
 
                 completedMigrations++;
             }
 
             return completedMigrations > 0;
+        }
+    }
+
+    private static MigrationInProgressMarker? ReadMigrationInProgressMarker(string path, out Exception? failure)
+    {
+        failure = null;
+        try
+        {
+            var marker = JsonSerializer.Deserialize<MigrationInProgressMarker>(File.ReadAllText(path), JsonDefaults.Options);
+            if (marker is null || string.IsNullOrEmpty(marker.MigrationId) || string.IsNullOrEmpty(marker.ProviderKey))
+            {
+                return null;
+            }
+
+            return marker;
+        }
+        catch (Exception ex) when (ex is JsonException or IOException or UnauthorizedAccessException)
+        {
+            failure = ex;
+            return null;
+        }
+    }
+
+    private static async Task<bool> IsMigrationRecordedAsync(IHistoryRepository historyRepository, string migrationId)
+    {
+        var appliedMigrations = await historyRepository.GetAppliedMigrationsAsync().ConfigureAwait(false);
+        return appliedMigrations.Any(e => string.Equals(e.MigrationId, migrationId, StringComparison.Ordinal));
+    }
+
+    private static string GetProviderKey(IJellyfinDatabaseProvider provider)
+    {
+        var providerType = provider.GetType();
+        return providerType.GetCustomAttribute<JellyfinDatabaseProviderKeyAttribute>()?.DatabaseProviderKey ?? providerType.FullName ?? providerType.Name;
+    }
+
+    private static string DescribeUndeletableMarker(string migrationId, string markerPath)
+    {
+        return string.Format(
+            CultureInfo.InvariantCulture,
+            "Schema migration {0} was applied, but {1} could not be deleted. Delete that file, then start Jellyfin again.",
+            migrationId,
+            markerPath);
+    }
+
+    private async Task<bool> IsMigrationAppliedAsync(ILogger logger, string migrationId)
+    {
+        try
+        {
+            var dbContext = await _dbContextFactory.CreateDbContextAsync().ConfigureAwait(false);
+            await using (dbContext.ConfigureAwait(false))
+            {
+                if (dbContext.Database.GetService<IDatabaseCreator>() is not IRelationalDatabaseCreator databaseCreator
+                    || !await databaseCreator.ExistsAsync().ConfigureAwait(false))
+                {
+                    return false;
+                }
+
+                var historyRepository = dbContext.GetService<IHistoryRepository>();
+                return await historyRepository.ExistsAsync().ConfigureAwait(false)
+                    && await IsMigrationRecordedAsync(historyRepository, migrationId).ConfigureAwait(false);
+            }
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            logger.LogWarning(ex, "Could not check whether schema migration {Name} was applied.", migrationId);
+            return false;
+        }
+    }
+
+    private async Task EnsureNoMigrationInProgressAsync(ILogger logger, bool restoringArchive)
+    {
+        var markerPath = MigrationInProgressMarkerPath;
+        if (!File.Exists(markerPath))
+        {
+            return;
+        }
+
+        var marker = ReadMigrationInProgressMarker(markerPath, out var failure);
+        var currentProviderKey = _jellyfinDatabaseProvider is null ? null : GetProviderKey(_jellyfinDatabaseProvider);
+        if (marker is not null
+            && currentProviderKey is not null
+            && string.Equals(marker.ProviderKey, currentProviderKey, StringComparison.Ordinal)
+            && await IsMigrationAppliedAsync(logger, marker.MigrationId).ConfigureAwait(false))
+        {
+            logger.LogWarning(
+                "Schema migration {Name} is recorded as applied, so the leftover {Path} is deleted and the migration is not repeated.",
+                marker.MigrationId,
+                markerPath);
+            DeleteMigrationInProgressMarker(logger, marker.MigrationId);
+            return;
+        }
+
+        string problem;
+        if (marker is null)
+        {
+            problem = string.Format(
+                CultureInfo.InvariantCulture,
+                "{0} exists but cannot be read, so it is not known which schema migration was started and did not finish. The database may be partly migrated.",
+                markerPath);
+        }
+        else if (currentProviderKey is not null && !string.Equals(marker.ProviderKey, currentProviderKey, StringComparison.Ordinal))
+        {
+            problem = string.Format(
+                CultureInfo.InvariantCulture,
+                "Schema migration {0} was started with the database provider {1} at {2:u} and did not finish, but the configured database provider is {3}. "
+                + "It is not known which database is partly migrated.",
+                marker.MigrationId,
+                marker.ProviderKey,
+                marker.StartedAtUtc,
+                currentProviderKey);
+        }
+        else
+        {
+            problem = string.Format(
+                CultureInfo.InvariantCulture,
+                "Schema migration {0} was started with the database provider {1} at {2:u} and did not finish. The database may be partly migrated.",
+                marker.MigrationId,
+                marker.ProviderKey,
+                marker.StartedAtUtc);
+        }
+
+        // A Jellyfin backup archive cannot repair a schema, so only the backup of the database engine leads out of this.
+        var message = string.Format(
+            CultureInfo.InvariantCulture,
+            "{0} Jellyfin will not migrate. To continue, restore the database from the backup your database engine took before the upgrade "
+            + "(for example a dump made with mysqldump), then delete {1}. Restoring a Jellyfin backup archive does not repair the database.",
+            problem,
+            markerPath);
+        if (restoringArchive)
+        {
+            message += " The archive given with --restore-archive was not restored. "
+                + "After the database is restored and the file is deleted, run Jellyfin once with --mode MigrateSystem so that it migrates the database, "
+                + "then restore the archive again.";
+        }
+
+        logger.LogCritical(failure, "{Message}", message);
+        throw new InvalidOperationException(message);
+    }
+
+    private void DeleteMigrationInProgressMarker(ILogger logger, string migrationId)
+    {
+        var markerPath = MigrationInProgressMarkerPath;
+        try
+        {
+            File.Delete(markerPath);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            var message = DescribeUndeletableMarker(migrationId, markerPath);
+            logger.LogCritical(ex, "{Message}", message);
+            throw new InvalidOperationException(message, ex);
+        }
+    }
+
+    private async Task WriteMigrationInProgressMarkerAsync(ILogger logger, string migrationId)
+    {
+        var markerPath = MigrationInProgressMarkerPath;
+        var marker = new MigrationInProgressMarker(migrationId, GetProviderKey(_jellyfinDatabaseProvider!), DateTime.UtcNow);
+        try
+        {
+            var stream = new FileStream(markerPath, FileMode.Create, FileAccess.Write, FileShare.None, 4096, FileOptions.WriteThrough);
+            await using (stream.ConfigureAwait(false))
+            {
+                await JsonSerializer.SerializeAsync(stream, marker, JsonDefaults.Options).ConfigureAwait(false);
+            }
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            logger.LogCritical(ex, "Could not write {Path} to record schema migration {Name}, so the migration was not started.", markerPath, migrationId);
+            try
+            {
+                File.Delete(markerPath);
+            }
+            catch (Exception inner) when (inner is IOException or UnauthorizedAccessException)
+            {
+                logger.LogWarning(inner, "Could not delete the incomplete {Path}.", markerPath);
+            }
+
+            throw;
         }
     }
 
@@ -475,9 +690,16 @@ internal class JellyfinMigrationService
 
         if (backupInstruction.JellyfinDb && _jellyfinDatabaseProvider is not null)
         {
-            logger.LogInformation("A migration will attempt to modify the jellyfin.db, will attempt to backup the file now.");
+            logger.LogInformation("A migration will attempt to modify the Jellyfin database, will ask its provider for a backup now.");
             _backupKey = (_backupKey.LibraryDb, await _jellyfinDatabaseProvider.MigrationBackupFast(CancellationToken.None).ConfigureAwait(false), _backupKey.FullBackup);
-            logger.LogInformation("Jellyfin database has been backed up as {BackupPath}", _backupKey.JellyfinDb);
+            if (string.IsNullOrEmpty(_backupKey.JellyfinDb))
+            {
+                logger.LogInformation("No backup of the Jellyfin database was taken, as its provider has nothing to snapshot");
+            }
+            else
+            {
+                logger.LogInformation("Jellyfin database has been backed up as {BackupPath}", _backupKey.JellyfinDb);
+            }
         }
 
         if (_backupService is not null && (backupInstruction.Metadata || backupInstruction.Subtitles || backupInstruction.Trickplay))
@@ -525,7 +747,9 @@ internal class JellyfinMigrationService
 
             var historyRepository = _dbContext.GetService<IHistoryRepository>();
             var createScript = historyRepository.GetInsertScript(new HistoryRow(_codeMigration.BuildCodeMigrationId(), GetJellyfinVersion()));
+#pragma warning disable JF0002 // The script comes from the history repository of the provider in use, so it is the SQL of that engine.
             await _dbContext.Database.ExecuteSqlRawAsync(createScript).ConfigureAwait(false);
+#pragma warning restore JF0002
         }
     }
 

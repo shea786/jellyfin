@@ -29,9 +29,24 @@ namespace Jellyfin.Server.Implementations.Tests.Users
         [InlineData(" this has a space at both ends and inbetween ")]
         [InlineData(".")]
         [InlineData("..")]
+        [InlineData("name\0")]
+        [InlineData("na\0me")]
+        [InlineData("\0name")]
         public void ThrowIfInvalidUsername_WhenInvalidUsername_ThrowsArgumentException(string username)
         {
             Assert.Throws<ArgumentException>(() => UserManager.ThrowIfInvalidUsername(username));
+        }
+
+        [Fact]
+        public void ThrowIfInvalidUsername_WhenUsernameFitsTheColumn_DoesNotThrow()
+        {
+            Assert.Null(Record.Exception(() => UserManager.ThrowIfInvalidUsername(new string('a', KeyNormalizer.UsernameMaxLength))));
+        }
+
+        [Fact]
+        public void ThrowIfInvalidUsername_WhenUsernameIsLongerThanTheColumn_ThrowsArgumentException()
+        {
+            Assert.Throws<ArgumentException>(() => UserManager.ThrowIfInvalidUsername(new string('a', KeyNormalizer.UsernameMaxLength + 1)));
         }
     }
 }

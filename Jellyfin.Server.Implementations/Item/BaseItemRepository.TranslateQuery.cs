@@ -260,17 +260,19 @@ public sealed partial class BaseItemRepository
         if (!string.IsNullOrEmpty(filter.SearchTerm))
         {
             var cleanedSearchTerm = filter.SearchTerm.GetCleanValue();
-            var originalSearchTerm = filter.SearchTerm;
-            if (SearchWildcardTerms.Any(f => cleanedSearchTerm.Contains(f)))
+            var originalTitlePattern = MatchNormalizer.ContainsCleanOriginalTitlePattern(filter.SearchTerm);
+            if (originalTitlePattern is null)
+            {
+                baseQuery = baseQuery.Where(e => false);
+            }
+            else if (SearchWildcardTerms.Any(f => cleanedSearchTerm.Contains(f)))
             {
                 cleanedSearchTerm = $"%{cleanedSearchTerm.Trim('%')}%";
-                var likeSearchTerm = $"%{originalSearchTerm.Trim('%')}%";
-                baseQuery = baseQuery.Where(e => EF.Functions.Like(e.CleanName!, cleanedSearchTerm) || (e.OriginalTitle != null && EF.Functions.Like(e.OriginalTitle, likeSearchTerm)));
+                baseQuery = baseQuery.Where(e => EF.Functions.Like(e.CleanName!, cleanedSearchTerm, LikePatterns.Escape) || EF.Functions.Like(e.CleanOriginalTitle, originalTitlePattern, LikePatterns.Escape));
             }
             else
             {
-                var likeSearchTerm = $"%{originalSearchTerm}%";
-                baseQuery = baseQuery.Where(e => e.CleanName!.Contains(cleanedSearchTerm) || (e.OriginalTitle != null && EF.Functions.Like(e.OriginalTitle, likeSearchTerm)));
+                baseQuery = baseQuery.Where(e => e.CleanName!.Contains(cleanedSearchTerm) || EF.Functions.Like(e.CleanOriginalTitle, originalTitlePattern, LikePatterns.Escape));
             }
         }
 
@@ -483,17 +485,26 @@ public sealed partial class BaseItemRepository
         var nameContains = filter.NameContains;
         if (!string.IsNullOrWhiteSpace(nameContains))
         {
+            var originalTitlePattern = MatchNormalizer.ContainsCleanOriginalTitlePattern(nameContains);
             if (SearchWildcardTerms.Any(f => nameContains.Contains(f)))
             {
-                nameContains = $"%{nameContains.Trim('%')}%";
-                baseQuery = baseQuery.Where(e => EF.Functions.Like(e.CleanName, nameContains) || EF.Functions.Like(e.OriginalTitle, nameContains));
+                var likeNameContains = LikePatterns.ContainsIgnoreAsciiCase(nameContains.Trim('%'));
+                baseQuery = originalTitlePattern is null
+                    ? baseQuery.Where(e => EF.Functions.Like(e.CleanName, likeNameContains, LikePatterns.Escape))
+                    : baseQuery.Where(e =>
+                        EF.Functions.Like(e.CleanName, likeNameContains, LikePatterns.Escape)
+                        || EF.Functions.Like(e.CleanOriginalTitle, originalTitlePattern, LikePatterns.Escape));
+            }
+            else if (originalTitlePattern is null)
+            {
+                baseQuery = baseQuery.Where(e => false);
             }
             else
             {
-                var likeNameContains = $"%{nameContains}%";
+                var cleanNameContains = nameContains.GetCleanValue();
                 baseQuery = baseQuery.Where(e =>
-                                    e.CleanName!.Contains(nameContains)
-                                    || EF.Functions.Like(e.OriginalTitle, likeNameContains));
+                    e.CleanName!.Contains(cleanNameContains)
+                    || EF.Functions.Like(e.CleanOriginalTitle, originalTitlePattern, LikePatterns.Escape));
             }
         }
 

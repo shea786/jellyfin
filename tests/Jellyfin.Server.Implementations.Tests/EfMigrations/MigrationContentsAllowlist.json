@@ -1,0 +1,192 @@
+// The accepted differences between the migrations of the providers that share an id (ADR-0001 W2).
+// MigrationContentsTests compares the Up and Down operations of every such migration by kind, table and column, with the
+// nullability of columns, the uniqueness of indexes, the on-delete action of foreign keys and the text of SQL (see
+// MigrationContents for what is not compared). Every difference needs exactly one entry here. An entry that matches no
+// difference fails the check as well.
+//
+// - "provider" is the provider that has the operation, or the providers separated by ", ". A provider is named by its first row in
+//   MigrationProvider.All: "MySQL 8.4" stands for the one set of migrations that MySQL and MariaDB share.
+// - "operation" is exactly as the check prints it. SQL is named by a hash of its text, with white space runs made one space,
+//   followed by the start of that text.
+// - "category": EquivalentSql (SQL that does what the other providers' operations do), EngineSpecific (a step that only one
+//   engine needs), LegacySqliteData (a fix for data that only old SQLite databases can hold, on SQLite only) or
+//   BaselineCoverage (two baselines share an id but cover a different number of SQLite migrations, on a baseline id only).
+//   A fix for a bug in current code is not a category: it has to reach every provider's migration.
+[
+  {
+    "migration": "20200101000000_InitialCreate",
+    "direction": "Up",
+    "provider": "MySQL 8.4",
+    "operation": "AlterDatabase",
+    "category": "EngineSpecific",
+    "reason": "Sets the default collation of the MySQL or MariaDB database to utf8mb4_0900_bin, and with it the character set utf8mb4, so that the database default is the binary collation of every text column. PostgreSQL fixes the encoding when the database is created and gives each text column its collation, and has no such operation."
+  },
+  {
+    "migration": "20200101000000_InitialCreate",
+    "direction": "Up",
+    "provider": "MySQL 8.4",
+    "operation": "CreateIndex Peoples (NameLower)",
+    "category": "BaselineCoverage",
+    "reason": "The MySQL baseline covers the SQLite migrations through 20261013120000_AddNormalisedMatchColumns, the PostgreSQL baseline only through 20261002210711_MakeOwnerIdIndexesPartial. PostgreSQL creates this index in its own 20261013120000_AddNormalisedMatchColumns."
+  },
+  {
+    "migration": "20200101000000_InitialCreate",
+    "direction": "Up",
+    "provider": "MySQL 8.4",
+    "operation": "CreateTable BaseItems column CleanOriginalTitle null",
+    "category": "BaselineCoverage",
+    "reason": "The MySQL baseline covers the SQLite migrations through 20261013120000_AddNormalisedMatchColumns, the PostgreSQL baseline only through 20261002210711_MakeOwnerIdIndexesPartial. PostgreSQL adds this column in its own 20261013120000_AddNormalisedMatchColumns."
+  },
+  {
+    "migration": "20200101000000_InitialCreate",
+    "direction": "Up",
+    "provider": "MySQL 8.4",
+    "operation": "CreateTable Peoples column NameLower not null",
+    "category": "BaselineCoverage",
+    "reason": "The MySQL baseline covers the SQLite migrations through 20261013120000_AddNormalisedMatchColumns, the PostgreSQL baseline only through 20261002210711_MakeOwnerIdIndexesPartial. PostgreSQL adds this column in its own 20261013120000_AddNormalisedMatchColumns."
+  },
+  {
+    "migration": "20200101000000_InitialCreate",
+    "direction": "Up",
+    "provider": "MySQL 8.4",
+    "operation": "InsertData BaseItems (Id, Album, AlbumArtists, Artists, Audio, ChannelId, CleanName, CleanOriginalTitle, CommunityRating, CriticRating, CustomRating, Data, DateCreated, DateLastMediaAdded, DateLastRefreshed, DateLastSaved, DateModified, EndDate, EpisodeTitle, ExternalId, ExternalSeriesId, ExternalServiceId, ExtraType, ForcedSortName, Genres, Height, IndexNumber, InheritedParentalRatingSubValue, InheritedParentalRatingValue, IsFolder, IsInMixedFolder, IsLocked, IsMovie, IsRepeat, IsSeries, IsVirtualItem, LUFS, MediaType, Name, NormalizationGain, OfficialRating, OriginalLanguage, OriginalTitle, Overview, OwnerId, ParentId, ParentIndexNumber, Path, PreferredMetadataCountryCode, PreferredMetadataLanguage, PremiereDate, PresentationUniqueKey, PrimaryVersionId, ProductionLocations, ProductionYear, RunTimeTicks, SeasonId, SeasonName, SeriesId, SeriesName, SeriesPresentationUniqueKey, ShowId, Size, SortName, StartDate, Studios, Tagline, Tags, TopParentId, TotalBitrate, Type, UnratedType, Width)",
+    "category": "BaselineCoverage",
+    "reason": "Both baselines seed the PLACEHOLDER item. The MySQL one also lists CleanOriginalTitle, as null, because its BaseItems table already has the column that PostgreSQL adds in 20261013120000_AddNormalisedMatchColumns."
+  },
+  {
+    "migration": "20200101000000_InitialCreate",
+    "direction": "Up",
+    "provider": "PostgreSQL",
+    "operation": "InsertData BaseItems (Id, Album, AlbumArtists, Artists, Audio, ChannelId, CleanName, CommunityRating, CriticRating, CustomRating, Data, DateCreated, DateLastMediaAdded, DateLastRefreshed, DateLastSaved, DateModified, EndDate, EpisodeTitle, ExternalId, ExternalSeriesId, ExternalServiceId, ExtraType, ForcedSortName, Genres, Height, IndexNumber, InheritedParentalRatingSubValue, InheritedParentalRatingValue, IsFolder, IsInMixedFolder, IsLocked, IsMovie, IsRepeat, IsSeries, IsVirtualItem, LUFS, MediaType, Name, NormalizationGain, OfficialRating, OriginalLanguage, OriginalTitle, Overview, OwnerId, ParentId, ParentIndexNumber, Path, PreferredMetadataCountryCode, PreferredMetadataLanguage, PremiereDate, PresentationUniqueKey, PrimaryVersionId, ProductionLocations, ProductionYear, RunTimeTicks, SeasonId, SeasonName, SeriesId, SeriesName, SeriesPresentationUniqueKey, ShowId, Size, SortName, StartDate, Studios, Tagline, Tags, TopParentId, TotalBitrate, Type, UnratedType, Width)",
+    "category": "BaselineCoverage",
+    "reason": "Both baselines seed the PLACEHOLDER item. The PostgreSQL one has no CleanOriginalTitle, because its BaseItems table gets that column only in 20261013120000_AddNormalisedMatchColumns."
+  },
+  {
+    "migration": "20200101000000_InitialCreate",
+    "direction": "Up",
+    "provider": "PostgreSQL",
+    "operation": "Sql d790ff836a7e1fe4 DO $jf$ DECLARE schema_name text := format('%I', current_sch...",
+    "category": "EngineSpecific",
+    "reason": "Creates the min(uuid) aggregate (PostgresUuidAggregate.CreateSql, the hand-written part of the PostgreSQL baseline), which PostgreSQL lacks and the queries that pick the lowest id of a group need. MySQL and MariaDB store a Guid as binary(16), where MIN works without it."
+  },
+  {
+    "migration": "20200101000000_InitialCreate",
+    "direction": "Up",
+    "provider": "PostgreSQL",
+    "operation": "Sql e68f10e2b9584b24 CREATE INDEX IF NOT EXISTS \"IX_Peoples_NameLower\" ON \"People...",
+    "category": "BaselineCoverage",
+    "reason": "The PostgreSQL baseline reproduces the schema through 20261002210711_MakeOwnerIdIndexesPartial, where people are looked up by an index on lower(\"Name\") that the model cannot express. Its own 20261013120000_AddNormalisedMatchColumns replaces it by the index on NameLower, which the MySQL baseline creates directly."
+  },
+  {
+    "migration": "20200101000000_InitialCreate",
+    "direction": "Down",
+    "provider": "MySQL 8.4",
+    "operation": "AlterDatabase",
+    "category": "EngineSpecific",
+    "reason": "Undoes the default collation that Up sets on the MySQL or MariaDB database: it sets the character set utf8mb4 again, which gives the database the server's default collation of utf8mb4. PostgreSQL has no such operation in Up to undo."
+  },
+  {
+    "migration": "20200101000000_InitialCreate",
+    "direction": "Down",
+    "provider": "PostgreSQL",
+    "operation": "Sql 568a281a9edd9388 DO $jf$ DECLARE schema_name text := format('%I', current_sch...",
+    "category": "EngineSpecific",
+    "reason": "Drops the min(uuid) aggregate and its function (PostgresUuidAggregate.DropSql) that Up creates on PostgreSQL only."
+  },
+  {
+    "migration": "20200101000000_InitialCreate",
+    "direction": "Down",
+    "provider": "PostgreSQL",
+    "operation": "Sql ecdc525fb61ca746 DROP INDEX IF EXISTS \"IX_Peoples_NameLower\";",
+    "category": "BaselineCoverage",
+    "reason": "Drops the index on lower(\"Name\") that Up creates on PostgreSQL only, because the PostgreSQL baseline covers fewer SQLite migrations than the MySQL one."
+  },
+  {
+    "migration": "20261013120000_AddNormalisedMatchColumns",
+    "direction": "Up",
+    "provider": "PostgreSQL",
+    "operation": "Sql de16bcbf36ccb1c7 ALTER TABLE \"Peoples\" ALTER COLUMN \"NameLower\" DROP DEFAULT;",
+    "category": "EngineSpecific",
+    "reason": "The generated AddColumn gives the new required column a default of '' so that existing rows get a value, and the model has no default, so PostgreSQL drops it again. SQLite has no ALTER COLUMN and would have to rebuild Peoples to drop it. The default left on SQLite changes nothing the server does: NameLower is a mapped property without a store-generated value, so EF Core writes it in every insert."
+  },
+  {
+    "migration": "20261013120000_AddNormalisedMatchColumns",
+    "direction": "Down",
+    "provider": "PostgreSQL",
+    "operation": "DropColumn BaseItems.CleanOriginalTitle",
+    "category": "EquivalentSql",
+    "reason": "The structured side of the SQLite SQL 'ALTER TABLE \"BaseItems\" DROP COLUMN \"CleanOriginalTitle\";' in the same Down, which drops the same column."
+  },
+  {
+    "migration": "20261013120000_AddNormalisedMatchColumns",
+    "direction": "Down",
+    "provider": "PostgreSQL",
+    "operation": "DropColumn Peoples.NameLower",
+    "category": "EquivalentSql",
+    "reason": "The structured side of the SQLite SQL 'ALTER TABLE \"Peoples\" DROP COLUMN \"NameLower\";' in the same Down, which drops the same column."
+  },
+  {
+    "migration": "20261013120000_AddNormalisedMatchColumns",
+    "direction": "Down",
+    "provider": "PostgreSQL",
+    "operation": "DropIndex Peoples IX_Peoples_NameLower",
+    "category": "EquivalentSql",
+    "reason": "The structured side of the SQLite SQL 'DROP INDEX IF EXISTS \"IX_Peoples_NameLower\";' in the same Down, which drops the same index. Up created it on both providers."
+  },
+  {
+    "migration": "20261013120000_AddNormalisedMatchColumns",
+    "direction": "Down",
+    "provider": "SQLite",
+    "operation": "Sql cf3259df44a18de0 ALTER TABLE \"Peoples\" DROP COLUMN \"NameLower\";",
+    "category": "EquivalentSql",
+    "reason": "Drops the column that PostgreSQL drops with DropColumn Peoples.NameLower. Written as SQL, as the migration says, because DropColumn through the migration builder rebuilds the whole SQLite table."
+  },
+  {
+    "migration": "20261013120000_AddNormalisedMatchColumns",
+    "direction": "Down",
+    "provider": "SQLite",
+    "operation": "Sql d6b5c99dd12fbf4e ALTER TABLE \"BaseItems\" DROP COLUMN \"CleanOriginalTitle\";",
+    "category": "EquivalentSql",
+    "reason": "Drops the column that PostgreSQL drops with DropColumn BaseItems.CleanOriginalTitle. Written as SQL, as the migration says, because DropColumn through the migration builder rebuilds the whole SQLite table."
+  },
+  {
+    "migration": "20261013120000_AddNormalisedMatchColumns",
+    "direction": "Down",
+    "provider": "SQLite",
+    "operation": "Sql ecdc525fb61ca746 DROP INDEX IF EXISTS \"IX_Peoples_NameLower\";",
+    "category": "EquivalentSql",
+    "reason": "Drops the index that PostgreSQL drops with DropIndex Peoples IX_Peoples_NameLower, written as SQL together with the column drops that follow it."
+  },
+  {
+    "migration": "20261016043615_IndexItemPathByHash",
+    "direction": "Up",
+    "provider": "PostgreSQL",
+    "operation": "DropIndex BaseItems IX_BaseItems_Path",
+    "category": "EngineSpecific",
+    "reason": "Drops the btree index on the path of an item, so that PostgreSQL can recreate it as a hash index. A btree index entry may hold at most 2704 bytes, so PostgreSQL refused an item whose path does not compress to that size. SQLite has no such limit and MySQL and MariaDB index a prefix of the path, so their index stays as it is and their migration has no operations."
+  },
+  {
+    "migration": "20261016043615_IndexItemPathByHash",
+    "direction": "Up",
+    "provider": "PostgreSQL",
+    "operation": "CreateIndex BaseItems (Path)",
+    "category": "EngineSpecific",
+    "reason": "Recreates the index on the path of an item as a hash index, which stores a hash of the value whatever its length and answers the lookups by path, equality and membership. Only PostgreSQL limits the size of an index entry this way; SQLite, MySQL and MariaDB keep their index, so their migration has no operations."
+  },
+  {
+    "migration": "20261016043615_IndexItemPathByHash",
+    "direction": "Down",
+    "provider": "PostgreSQL",
+    "operation": "DropIndex BaseItems IX_BaseItems_Path",
+    "category": "EngineSpecific",
+    "reason": "Drops the hash index on the path of an item, to recreate the btree index of the previous migration. Only PostgreSQL changed the index, so the other providers have nothing to undo."
+  },
+  {
+    "migration": "20261016043615_IndexItemPathByHash",
+    "direction": "Down",
+    "provider": "PostgreSQL",
+    "operation": "CreateIndex BaseItems (Path)",
+    "category": "EngineSpecific",
+    "reason": "Recreates the btree index of the previous migration on the path of an item, with nulls first. Only PostgreSQL changed the index, so the other providers have nothing to undo. It fails while an item has a path too long for a btree index entry."
+  }
+]

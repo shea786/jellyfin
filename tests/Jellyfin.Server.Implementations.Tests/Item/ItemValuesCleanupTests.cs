@@ -3,6 +3,7 @@ using System.Linq;
 using System.Threading.Tasks;
 using Emby.Server.Implementations.Data;
 using Jellyfin.Database.Implementations.Entities;
+using Jellyfin.Database.Testing;
 using Jellyfin.Server.Implementations.Item;
 using MediaBrowser.Controller;
 using MediaBrowser.Controller.Entities;
@@ -16,7 +17,7 @@ using Xunit;
 
 namespace Jellyfin.Server.Implementations.Tests.Item;
 
-public sealed class ItemValuesCleanupTests : SqliteDbTestFixture
+public sealed class ItemValuesCleanupTests : JellyfinDbTestFixture
 {
     private readonly ItemPersistenceService _service;
 
@@ -24,6 +25,7 @@ public sealed class ItemValuesCleanupTests : SqliteDbTestFixture
     {
         _service = new ItemPersistenceService(
             CreateDbContextFactory(),
+            DatabaseProvider,
             Mock.Of<IServerApplicationHost>(),
             NullLogger<ItemPersistenceService>.Instance);
     }
@@ -112,7 +114,7 @@ public sealed class ItemValuesCleanupTests : SqliteDbTestFixture
         Assert.Empty(after.ItemValues);
     }
 
-    [Fact]
+    [ProviderFact(TestDbProvider.Sqlite)]
     public void DeleteItem_CleanupFails_RollsBackItemAndMapDeletion()
     {
         var item = CreateItem();

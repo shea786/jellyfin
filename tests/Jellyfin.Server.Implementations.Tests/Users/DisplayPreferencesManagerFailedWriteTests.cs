@@ -6,11 +6,12 @@ using Jellyfin.Server.Implementations.Users;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
+using Microsoft.Extensions.Logging.Abstractions;
 using Xunit;
 
 namespace Jellyfin.Server.Implementations.Tests.Users;
 
-public sealed class DisplayPreferencesManagerFailedWriteTests : SqliteDbTestFixture
+public sealed class DisplayPreferencesManagerFailedWriteTests : JellyfinDbTestFixture
 {
     private const string Client = "client";
 
@@ -29,7 +30,7 @@ public sealed class DisplayPreferencesManagerFailedWriteTests : SqliteDbTestFixt
         : base(statements)
     {
         _statements = statements;
-        _manager = new DisplayPreferencesManager(CreateDbContextFactory());
+        _manager = new DisplayPreferencesManager(CreateDbContextFactory(), NullLogger<DisplayPreferencesManager>.Instance);
     }
 
     [Fact]
@@ -78,7 +79,7 @@ public sealed class DisplayPreferencesManagerFailedWriteTests : SqliteDbTestFixt
 
         public override InterceptionResult<int> NonQueryExecuting(DbCommand command, CommandEventData eventData, InterceptionResult<int> result)
         {
-            if (SkipNextDelete && command.CommandText.StartsWith("DELETE FROM \"CustomItemDisplayPreferences\"", StringComparison.Ordinal))
+            if (SkipNextDelete && IsDelete(command))
             {
                 SkipNextDelete = false;
                 return InterceptionResult<int>.SuppressWithResult(0);
@@ -88,9 +89,28 @@ public sealed class DisplayPreferencesManagerFailedWriteTests : SqliteDbTestFixt
             return result;
         }
 
+        private static bool IsInsert(DbCommand command)
+        {
+            return Unquoted(command).Contains("INSERT INTO CustomItemDisplayPreferences", StringComparison.Ordinal);
+        }
+
+        private static bool IsDelete(DbCommand command)
+        {
+            var text = Unquoted(command);
+            return text.StartsWith("DELETE", StringComparison.Ordinal) && text.Contains("FROM CustomItemDisplayPreferences", StringComparison.Ordinal);
+        }
+
+        private static string Unquoted(DbCommand command)
+        {
+            // The quotes of the engine, double quotes, back quotes or brackets, are taken out to match the statement, so an
+            // expected statement must not hold a bracket of its own.
+            return command.CommandText.Replace("\"", string.Empty, StringComparison.Ordinal).Replace("`", string.Empty, StringComparison.Ordinal)
+                .Replace("[", string.Empty, StringComparison.Ordinal).Replace("]", string.Empty, StringComparison.Ordinal);
+        }
+
         private void FailInsert(DbCommand command)
         {
-            if (FailInserts && command.CommandText.StartsWith("INSERT INTO \"CustomItemDisplayPreferences\"", StringComparison.Ordinal))
+            if (FailInserts && IsInsert(command))
             {
                 throw new SqliteException("SQLite Error 19: 'UNIQUE constraint failed: CustomItemDisplayPreferences.UserId, CustomItemDisplayPreferences.ItemId, CustomItemDisplayPreferences.Client, CustomItemDisplayPreferences.Key'.", 19);
             }

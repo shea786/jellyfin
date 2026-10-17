@@ -88,6 +88,12 @@ namespace Jellyfin.Server.Implementations.Security
                 auth.TryGetValue("Client", out client);
                 auth.TryGetValue("Version", out version);
                 auth.TryGetValue("Token", out token);
+
+                // The device is stored and looked up without NUL characters and within its column length, so compare the cleaned values.
+                deviceId = deviceId is null ? null : KeyNormalizer.NormalizeDeviceId(deviceId.RemoveNullCharacters());
+                deviceName = deviceName?.RemoveNullCharacters();
+                client = client?.RemoveNullCharacters();
+                version = version?.RemoveNullCharacters();
             }
 
             if (_configurationManager.Configuration.EnableLegacyAuthorization && string.IsNullOrEmpty(token))

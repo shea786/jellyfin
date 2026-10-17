@@ -1,6 +1,8 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.IO;
+using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using Jellyfin.Api.Controllers;
@@ -14,6 +16,7 @@ using MediaBrowser.Controller.Subtitles;
 using MediaBrowser.Model.Dto;
 using MediaBrowser.Model.Entities;
 using MediaBrowser.Model.IO;
+using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Logging.Abstractions;
 using Moq;
@@ -91,6 +94,26 @@ public class SubtitleControllerTests
         Assert.IsType<FileStreamResult>(result);
     }
 
+    [Theory]
+    [InlineData("WEBVTT\n\n00:00:01.000 --> 00:00:02.000\nSay WEBVTT aloud\n", "WEBVTT\nX-TIMESTAMP-MAP=MPEGTS:900000,LOCAL:00:00:00.000\n\n00:00:01.000 --> 00:00:02.000\nSay WEBVTT aloud\n")]
+    [InlineData("WEBVTT\r\n\r\n00:00:01.000 --> 00:00:02.000\r\nSay WEBVTT aloud\r\n", "WEBVTT\r\nX-TIMESTAMP-MAP=MPEGTS:900000,LOCAL:00:00:00.000\r\n\r\n00:00:01.000 --> 00:00:02.000\r\nSay WEBVTT aloud\r\n")]
+    [InlineData("WEBVTT - English\n\n00:00:01.000 --> 00:00:02.000\nSay WEBVTT aloud\n", "WEBVTT - English\nX-TIMESTAMP-MAP=MPEGTS:900000,LOCAL:00:00:00.000\n\n00:00:01.000 --> 00:00:02.000\nSay WEBVTT aloud\n")]
+    [InlineData("WEBVTT - English\r\n\r\n00:00:01.000 --> 00:00:02.000\r\nSay WEBVTT aloud\r\n", "WEBVTT - English\r\nX-TIMESTAMP-MAP=MPEGTS:900000,LOCAL:00:00:00.000\r\n\r\n00:00:01.000 --> 00:00:02.000\r\nSay WEBVTT aloud\r\n")]
+    [InlineData("WEBVTT", "WEBVTT\nX-TIMESTAMP-MAP=MPEGTS:900000,LOCAL:00:00:00.000")]
+    [InlineData("WEBVTT - English", "WEBVTT - English\nX-TIMESTAMP-MAP=MPEGTS:900000,LOCAL:00:00:00.000")]
+    public async Task GetSubtitle_AddVttTimeMap_OnlyChangesHeaderLine(string vtt, string expected)
+    {
+        var encoder = new Mock<ISubtitleEncoder>(MockBehavior.Strict);
+        var controller = CreateController("subrip", "/media/sub.srt", encoder, out _);
+        encoder.Setup(e => e.GetSubtitles(It.IsAny<BaseItem>(), It.IsAny<string>(), SubtitleIndex, "vtt", 0, 0, false, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new MemoryStream(Encoding.UTF8.GetBytes(vtt)));
+
+        var result = await controller.GetSubtitle(_itemId, _itemId.ToString("N"), SubtitleIndex, "vtt", null, null, null, null, null, addVttTimeMap: true);
+
+        var fileResult = Assert.IsType<FileContentResult>(result);
+        Assert.Equal(expected, Encoding.UTF8.GetString(fileResult.FileContents));
+    }
+
     private static SubtitleController CreateController(
         string codec,
         string subtitlePath,
@@ -133,5 +156,89 @@ public class SubtitleControllerTests
             Mock.Of<IProviderManager>(),
             fileSystem.Object,
             NullLogger<SubtitleController>.Instance);
+    }
+
+    [Theory]
+    [MemberData(nameof(GetVttTimestampMap_Success_TestData))]
+    public static void GetVttTimestampMap_Success(long mpegTimestamp, string expected)
+    {
+        Assert.Equal(expected, SubtitleController.GetVttTimestampMap(mpegTimestamp));
+    }
+
+    public static TheoryData<long, string> GetVttTimestampMap_Success_TestData()
+    {
+        var data = new TheoryData<long, string>();
+        data.Add(900000, "X-TIMESTAMP-MAP=MPEGTS:900000,LOCAL:00:00:00.000");
+        data.Add(0, "X-TIMESTAMP-MAP=MPEGTS:0,LOCAL:00:00:00.000");
+        return data;
+    }
+
+    [Theory]
+    [MemberData(nameof(GetSubtitleSegmentUrl_Success_TestData))]
+    public static void GetSubtitleSegmentUrl_Success(long positionTicks, long endPositionTicks, string accessToken, long vttTimestampMapMpegts, string expected)
+    {
+        Assert.Equal(expected, SubtitleController.GetSubtitleSegmentUrl(positionTicks, endPositionTicks, accessToken, vttTimestampMapMpegts));
+    }
+
+    public static TheoryData<long, long, string, long, string> GetSubtitleSegmentUrl_Success_TestData()
+    {
+        var data = new TheoryData<long, long, string, long, string>();
+        data.Add(
+            0,
+            300000000,
+            "abc123",
+            0,
+            "stream.vtt?CopyTimestamps=true&AddVttTimeMap=true&StartPositionTicks=0&EndPositionTicks=300000000&ApiKey=abc123&VttTimestampMapMpegts=0");
+        data.Add(
+            300000000,
+            600000000,
+            "abc123",
+            900000,
+            "stream.vtt?CopyTimestamps=true&AddVttTimeMap=true&StartPositionTicks=300000000&EndPositionTicks=600000000&ApiKey=abc123&VttTimestampMapMpegts=900000");
+        return data;
+    }
+
+    [Fact]
+    public async Task GetSubtitlePlaylist_CommaDecimalCulture_FormatsSegmentDurationInvariantly()
+    {
+        var item = new Movie { Id = _itemId };
+        var mediaSourceId = _itemId.ToString("N");
+
+        var libraryManager = new Mock<ILibraryManager>();
+        libraryManager.Setup(l => l.GetItemById<Video>(_itemId, Guid.Empty)).Returns(item);
+
+        var mediaSourceManager = new Mock<IMediaSourceManager>();
+        mediaSourceManager.Setup(m => m.GetMediaSource(item, mediaSourceId, null, false, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new MediaSourceInfo { Id = mediaSourceId, RunTimeTicks = 45_000_000 });
+
+        var controller = new SubtitleController(
+            Mock.Of<IServerConfigurationManager>(),
+            libraryManager.Object,
+            Mock.Of<ISubtitleManager>(),
+            Mock.Of<ISubtitleEncoder>(),
+            mediaSourceManager.Object,
+            Mock.Of<IProviderManager>(),
+            Mock.Of<IFileSystem>(),
+            NullLogger<SubtitleController>.Instance)
+        {
+            ControllerContext = new ControllerContext { HttpContext = new DefaultHttpContext() }
+        };
+
+        var originalCulture = CultureInfo.CurrentCulture;
+
+        try
+        {
+            CultureInfo.CurrentCulture = CultureInfo.GetCultureInfo("fr-FR");
+
+            var result = await controller.GetSubtitlePlaylist(_itemId, SubtitleIndex, mediaSourceId, 10);
+
+            var fileResult = Assert.IsType<FileContentResult>(result);
+            var lines = Encoding.UTF8.GetString(fileResult.FileContents).Split(Environment.NewLine);
+            Assert.Equal("#EXTINF:4.5,", Assert.Single(lines, line => line.StartsWith("#EXTINF:", StringComparison.Ordinal)));
+        }
+        finally
+        {
+            CultureInfo.CurrentCulture = originalCulture;
+        }
     }
 }

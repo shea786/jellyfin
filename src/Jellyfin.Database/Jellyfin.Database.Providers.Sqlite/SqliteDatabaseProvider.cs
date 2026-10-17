@@ -12,6 +12,7 @@ using MediaBrowser.Common.Configuration;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
+using Microsoft.EntityFrameworkCore.Query.SqlExpressions;
 using Microsoft.Extensions.Logging;
 
 namespace Jellyfin.Database.Providers.Sqlite;
@@ -23,6 +24,14 @@ namespace Jellyfin.Database.Providers.Sqlite;
 public sealed class SqliteDatabaseProvider : IJellyfinDatabaseProvider
 {
     private const string BackupFolderName = "SQLiteBackups";
+
+    // SQLITE_CONSTRAINT_PRIMARYKEY and SQLITE_CONSTRAINT_UNIQUE.
+    private const int SqliteConstraintPrimaryKey = 1555;
+    private const int SqliteConstraintUnique = 2067;
+    private const int SqliteTooBig = 18;
+    private const int SqliteConstraint = 19;
+    private const int SqliteMismatch = 20;
+
     private readonly IApplicationPaths _applicationPaths;
     private readonly ILogger<SqliteDatabaseProvider> _logger;
 
@@ -104,6 +113,22 @@ public sealed class SqliteDatabaseProvider : IJellyfinDatabaseProvider
     }
 
     /// <inheritdoc/>
+    public bool IsRetryableWriteConflict(Exception exception)
+    {
+        ArgumentNullException.ThrowIfNull(exception);
+
+        for (var current = exception; current is not null; current = current.InnerException)
+        {
+            if (current is SqliteException { SqliteExtendedErrorCode: SqliteConstraintUnique or SqliteConstraintPrimaryKey })
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <inheritdoc/>
     public Task RunScheduledOptimisation(CancellationToken cancellationToken)
     {
         return OptimizeAsync(cancellationToken);
@@ -141,7 +166,15 @@ public sealed class SqliteDatabaseProvider : IJellyfinDatabaseProvider
     /// <inheritdoc/>
     public void OnModelCreating(ModelBuilder modelBuilder)
     {
-        modelBuilder.SetDefaultDateTimeKind(DateTimeKind.Utc);
+        // SQLite's LIKE already ignores the case of ASCII letters, and only those (Jellyfin does not turn on
+        // case_sensitive_like), so value LIKE pattern gives the same rows as the default lower(value) LIKE pattern
+        // without a lower() per row.
+        modelBuilder.HasDbFunction(() => JellyfinDbFunctions.LikeIgnoreAsciiCase(default, default!))
+            .HasTranslation(args =>
+            {
+                var escape = new SqlConstantExpression(LikePatterns.Escape, typeof(string), args[0].TypeMapping);
+                return new LikeExpression(args[0], args[1], escape, typeMapping: null);
+            });
     }
 
     /// <inheritdoc/>
@@ -410,15 +443,43 @@ public sealed class SqliteDatabaseProvider : IJellyfinDatabaseProvider
         foreach (var tableName in tableNames)
         {
             deleteQueries.Add($"DELETE FROM \"{tableName}\";");
+
+            // AUTOINCREMENT keeps the highest id a table ever used, even after its rows are gone.
+            deleteQueries.Add($"DELETE FROM sqlite_sequence WHERE name = '{tableName.Replace("'", "''", StringComparison.Ordinal)}';");
         }
 
+        // SQLite ignores PRAGMA foreign_keys inside a transaction, so there the checks are postponed to the commit instead.
+        var inTransaction = dbContext.Database.CurrentTransaction is not null;
+        var disableForeignKeys = inTransaction ? "PRAGMA defer_foreign_keys = ON;" : "PRAGMA foreign_keys = OFF;";
+        var enableForeignKeys = inTransaction ? string.Empty : "PRAGMA foreign_keys = ON;";
         var deleteAllQuery =
         $"""
-        PRAGMA foreign_keys = OFF;
+        {disableForeignKeys}
         {string.Join('\n', deleteQueries)}
-        PRAGMA foreign_keys = ON;
+        {enableForeignKeys}
         """;
 
         await dbContext.Database.ExecuteSqlRawAsync(deleteAllQuery).ConfigureAwait(false);
+    }
+
+    /// <inheritdoc/>
+    public bool IsDataError(Exception exception)
+    {
+        ArgumentNullException.ThrowIfNull(exception);
+
+        // The primary result codes for a violated constraint, which includes a trigger that raises an error, for a
+        // value over the length limit, and for a value of the wrong type. A busy or locked database, and the errors of
+        // the storage, have other codes. The low byte of a result code is its primary code, should an extended code
+        // ever be reported in its place.
+        for (var current = exception; current is not null; current = current.InnerException)
+        {
+            if (current is SqliteException sqliteException
+                && (sqliteException.SqliteErrorCode & 0xFF) is SqliteTooBig or SqliteConstraint or SqliteMismatch)
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 }

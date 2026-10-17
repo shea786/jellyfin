@@ -1,4 +1,6 @@
 using System;
+using System.Collections.Generic;
+using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Net;
@@ -8,6 +10,7 @@ using System.Threading.Tasks;
 using Emby.Server.Implementations.Serialization;
 using Jellyfin.Api.Models.StartupDtos;
 using Jellyfin.Database.Implementations;
+using Jellyfin.Database.Testing;
 using Jellyfin.Extensions.Json;
 using MediaBrowser.Common.Configuration;
 using MediaBrowser.Model.Configuration;
@@ -16,6 +19,8 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.Extensions.DependencyInjection;
+using MySqlConnector;
+using Npgsql;
 using Xunit;
 
 namespace Jellyfin.Server.Integration.Tests;
@@ -27,8 +32,15 @@ public sealed class StartOverTests : IDisposable
 {
     private readonly string _root = Path.Combine(Path.GetTempPath(), "jellyfin-test-data", "start-over-" + Path.GetFileNameWithoutExtension(Path.GetRandomFileName()));
     private readonly JsonSerializerOptions _jsonOptions = JsonDefaults.Options;
+    private TestDatabase? _database;
 
-    [Fact]
+    public enum DatabaseLoss
+    {
+        Dropped,
+        Emptied
+    }
+
+    [ProviderFact(TestDbProvider.Sqlite)]
     public async Task DeletedDatabase_WizardReset_StartsAsNewServer()
     {
         var paths = await SetUpServerAndDeleteDatabaseAsync();
@@ -46,7 +58,7 @@ public sealed class StartOverTests : IDisposable
         Assert.All(context.GetService<IMigrationsAssembly>().Migrations.Keys, id => Assert.Contains(id, applied));
     }
 
-    [Fact]
+    [ProviderFact(TestDbProvider.Sqlite)]
     public async Task DeletedDatabase_WizardStillCompleted_RefusesToStart()
     {
         var paths = await SetUpServerAndDeleteDatabaseAsync();
@@ -62,9 +74,51 @@ public sealed class StartOverTests : IDisposable
         Assert.Equal(systemConfiguration, await File.ReadAllBytesAsync(paths.SystemConfigurationFilePath, TestContext.Current.CancellationToken));
     }
 
+    [ProviderTheory(TestDbProvider.Postgres, TestDbProvider.MySql, TestDbProvider.MariaDb)]
+    [InlineData(DatabaseLoss.Dropped)]
+    [InlineData(DatabaseLoss.Emptied)]
+    public async Task DeletedDatabase_OnDatabaseServer_WizardReset_StartsAsNewServer(DatabaseLoss loss)
+    {
+        var paths = await SetUpServerAndLoseDatabaseAsync(loss);
+        SetWizardCompleted(paths, false);
+
+        using var factory = new SameRootApplicationFactory(_root);
+        using var client = factory.CreateClient();
+
+        using var response = await client.GetAsync("/Startup/Configuration", TestContext.Current.CancellationToken);
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        var dbContextFactory = factory.Services.GetRequiredService<IDbContextFactory<JellyfinDbContext>>();
+        await using var context = await dbContextFactory.CreateDbContextAsync(TestContext.Current.CancellationToken);
+        var applied = (await context.Database.GetAppliedMigrationsAsync(TestContext.Current.CancellationToken)).ToHashSet(StringComparer.Ordinal);
+        Assert.All(context.GetService<IMigrationsAssembly>().Migrations.Keys, id => Assert.Contains(id, applied));
+    }
+
+    [ProviderTheory(TestDbProvider.Postgres, TestDbProvider.MySql, TestDbProvider.MariaDb)]
+    [InlineData(DatabaseLoss.Dropped)]
+    [InlineData(DatabaseLoss.Emptied)]
+    public async Task DeletedDatabase_OnDatabaseServer_WizardStillCompleted_RefusesToStart(DatabaseLoss loss)
+    {
+        var problem = ExpectedProblem(loss);
+        var paths = await SetUpServerAndLoseDatabaseAsync(loss);
+        var systemConfiguration = await File.ReadAllBytesAsync(paths.SystemConfigurationFilePath, TestContext.Current.CancellationToken);
+        var databaseConfiguration = await File.ReadAllBytesAsync(Path.Combine(paths.ConfigurationDirectoryPath, "database.xml"), TestContext.Current.CancellationToken);
+
+        using var factory = new SameRootApplicationFactory(_root);
+        var exception = Assert.ThrowsAny<Exception>(() => factory.CreateClient());
+
+        var guard = exception as InvalidOperationException ?? exception.InnerException as InvalidOperationException;
+        Assert.NotNull(guard);
+        Assert.Contains(problem, guard.Message, StringComparison.Ordinal);
+        Assert.Equal(systemConfiguration, await File.ReadAllBytesAsync(paths.SystemConfigurationFilePath, TestContext.Current.CancellationToken));
+        Assert.Equal(databaseConfiguration, await File.ReadAllBytesAsync(Path.Combine(paths.ConfigurationDirectoryPath, "database.xml"), TestContext.Current.CancellationToken));
+        Assert.Equal(loss == DatabaseLoss.Emptied ? 0L : (long?)null, await CountTablesAsync());
+    }
+
     public void Dispose()
     {
-        SqliteConnection.ClearAllPools();
+        ClearAllPools();
+        _database?.Dispose();
         try
         {
             Directory.Delete(_root, true);
@@ -73,6 +127,26 @@ public sealed class StartOverTests : IDisposable
         {
             // Best effort, a locked file must not fail the test.
         }
+    }
+
+    private static string ExpectedProblem(DatabaseLoss loss)
+    {
+        if (loss == DatabaseLoss.Dropped)
+        {
+            return "the database does not exist";
+        }
+
+        // Dropping every table on MySQL and MariaDB drops the history table as well.
+        return TestDatabaseEnvironment.Provider == TestDbProvider.Postgres
+            ? "the migration history of the database is empty"
+            : "the database has no migration history";
+    }
+
+    private static void ClearAllPools()
+    {
+        SqliteConnection.ClearAllPools();
+        NpgsqlConnection.ClearAllPools();
+        MySqlConnection.ClearAllPools();
     }
 
     private static void SetWizardCompleted(IApplicationPaths paths, bool completed)
@@ -84,6 +158,70 @@ public sealed class StartOverTests : IDisposable
     }
 
     private async Task<IApplicationPaths> SetUpServerAndDeleteDatabaseAsync()
+    {
+        var paths = await SetUpServerAsync();
+        SqliteConnection.ClearAllPools();
+        foreach (var file in Directory.GetFiles(paths.DataPath, "jellyfin.db*"))
+        {
+            File.Delete(file);
+        }
+
+        return paths;
+    }
+
+    private async Task<IApplicationPaths> SetUpServerAndLoseDatabaseAsync(DatabaseLoss loss)
+    {
+        _database = TestDatabaseEnvironment.Backend.CreateEmpty();
+        var configurationDirectory = Path.Combine(_root, "config");
+        Directory.CreateDirectory(configurationDirectory);
+        JellyfinApplicationFactory.WriteDatabaseConfiguration(configurationDirectory, _database);
+
+        var paths = await SetUpServerAsync();
+        ClearAllPools();
+        if (loss == DatabaseLoss.Dropped)
+        {
+            _database.Dispose();
+        }
+        else if (TestDatabaseEnvironment.Provider == TestDbProvider.Postgres)
+        {
+            await using var connection = new NpgsqlConnection(GetPostgresConnectionString());
+            await connection.OpenAsync(TestContext.Current.CancellationToken);
+            await using var command = new NpgsqlCommand("DROP SCHEMA public CASCADE; CREATE SCHEMA public;", connection);
+            await command.ExecuteNonQueryAsync(TestContext.Current.CancellationToken);
+        }
+        else
+        {
+            await DropAllMySqlTablesAsync();
+        }
+
+        return paths;
+    }
+
+    private async Task DropAllMySqlTablesAsync()
+    {
+        await using var connection = new MySqlConnection(GetMySqlConnectionString());
+        await connection.OpenAsync(TestContext.Current.CancellationToken);
+
+        var tables = new List<string>();
+        await using (var query = new MySqlCommand("SELECT TABLE_NAME FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_TYPE = 'BASE TABLE'", connection))
+        await using (var reader = await query.ExecuteReaderAsync(TestContext.Current.CancellationToken))
+        {
+            while (await reader.ReadAsync(TestContext.Current.CancellationToken))
+            {
+                tables.Add(reader.GetString(0));
+            }
+        }
+
+        await using var disableChecks = new MySqlCommand("SET FOREIGN_KEY_CHECKS = 0", connection);
+        await disableChecks.ExecuteNonQueryAsync(TestContext.Current.CancellationToken);
+
+#pragma warning disable CA2100 // The names are read from the server and quoted.
+        await using var drop = new MySqlCommand("DROP TABLE " + string.Join(", ", tables.Select(table => "`" + table.Replace("`", "``", StringComparison.Ordinal) + "`")), connection);
+#pragma warning restore CA2100
+        await drop.ExecuteNonQueryAsync(TestContext.Current.CancellationToken);
+    }
+
+    private async Task<IApplicationPaths> SetUpServerAsync()
     {
         IApplicationPaths paths;
         using (var factory = new SameRootApplicationFactory(_root))
@@ -103,16 +241,65 @@ public sealed class StartOverTests : IDisposable
             }
         }
 
-        // Completing the wizard through the API would queue a library scan that can still hold the database file when
-        // it is deleted below, so the flag is set on the stopped server instead.
+        // Completing the wizard through the API would queue a library scan that can still hold the database when it is
+        // lost below, so the flag is set on the stopped server instead.
         SetWizardCompleted(paths, true);
-        SqliteConnection.ClearAllPools();
-        foreach (var file in Directory.GetFiles(paths.DataPath, "jellyfin.db*"))
-        {
-            File.Delete(file);
-        }
-
         return paths;
+    }
+
+    private string GetPostgresConnectionString()
+    {
+        var builder = new NpgsqlConnectionStringBuilder(RelationalOptionsExtension.Extract(_database!.Options).ConnectionString)
+        {
+            Pooling = false
+        };
+        return builder.ConnectionString;
+    }
+
+    private string GetMySqlConnectionString()
+    {
+        var builder = new MySqlConnectionStringBuilder(RelationalOptionsExtension.Extract(_database!.Options).ConnectionString!)
+        {
+            Pooling = false
+        };
+        return builder.ConnectionString;
+    }
+
+    private async Task<long?> CountTablesAsync()
+    {
+        return TestDatabaseEnvironment.Provider == TestDbProvider.Postgres
+            ? await CountPostgresTablesAsync()
+            : await CountMySqlTablesAsync();
+    }
+
+    private async Task<long?> CountMySqlTablesAsync()
+    {
+        try
+        {
+            await using var connection = new MySqlConnection(GetMySqlConnectionString());
+            await connection.OpenAsync(TestContext.Current.CancellationToken);
+            await using var command = new MySqlCommand("SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE()", connection);
+            return Convert.ToInt64(await command.ExecuteScalarAsync(TestContext.Current.CancellationToken), CultureInfo.InvariantCulture);
+        }
+        catch (MySqlException ex) when (ex.ErrorCode == MySqlErrorCode.UnknownDatabase)
+        {
+            return null;
+        }
+    }
+
+    private async Task<long?> CountPostgresTablesAsync()
+    {
+        try
+        {
+            await using var connection = new NpgsqlConnection(GetPostgresConnectionString());
+            await connection.OpenAsync(TestContext.Current.CancellationToken);
+            await using var command = new NpgsqlCommand("SELECT count(*) FROM information_schema.tables WHERE table_schema = 'public'", connection);
+            return (long?)await command.ExecuteScalarAsync(TestContext.Current.CancellationToken);
+        }
+        catch (PostgresException ex) when (ex.SqlState == PostgresErrorCodes.InvalidCatalogName)
+        {
+            return null;
+        }
     }
 
     private sealed class SameRootApplicationFactory(string webHostPathRoot) : JellyfinApplicationFactory(webHostPathRoot);

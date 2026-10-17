@@ -15,7 +15,7 @@ namespace Jellyfin.Server.Implementations.Migrations
         protected override void BuildModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
-            modelBuilder.HasAnnotation("ProductVersion", "10.0.11");
+            modelBuilder.HasAnnotation("ProductVersion", "10.0.12");
 
             modelBuilder.Entity("Jellyfin.Database.Implementations.Entities.AccessSchedule", b =>
                 {
@@ -163,6 +163,10 @@ namespace Jellyfin.Server.Implementations.Migrations
                         .HasColumnType("TEXT");
 
                     b.Property<string>("CleanName")
+                        .HasColumnType("TEXT")
+                        .HasAnnotation("Jellyfin:UnboundedIndexedText", true);
+
+                    b.Property<string>("CleanOriginalTitle")
                         .HasColumnType("TEXT");
 
                     b.Property<float?>("CommunityRating")
@@ -253,10 +257,12 @@ namespace Jellyfin.Server.Implementations.Migrations
                         .HasColumnType("REAL");
 
                     b.Property<string>("MediaType")
+                        .HasMaxLength(64)
                         .HasColumnType("TEXT");
 
                     b.Property<string>("Name")
-                        .HasColumnType("TEXT");
+                        .HasColumnType("TEXT")
+                        .HasAnnotation("Jellyfin:UnboundedIndexedText", true);
 
                     b.Property<float?>("NormalizationGain")
                         .HasColumnType("REAL");
@@ -283,7 +289,8 @@ namespace Jellyfin.Server.Implementations.Migrations
                         .HasColumnType("INTEGER");
 
                     b.Property<string>("Path")
-                        .HasColumnType("TEXT");
+                        .HasColumnType("TEXT")
+                        .HasAnnotation("Jellyfin:UnboundedIndexedText", true);
 
                     b.Property<string>("PreferredMetadataCountryCode")
                         .HasColumnType("TEXT");
@@ -295,7 +302,8 @@ namespace Jellyfin.Server.Implementations.Migrations
                         .HasColumnType("TEXT");
 
                     b.Property<string>("PresentationUniqueKey")
-                        .HasColumnType("TEXT");
+                        .HasColumnType("TEXT")
+                        .HasAnnotation("Jellyfin:UnboundedIndexedText", true);
 
                     b.Property<Guid?>("PrimaryVersionId")
                         .HasColumnType("TEXT");
@@ -319,10 +327,12 @@ namespace Jellyfin.Server.Implementations.Migrations
                         .HasColumnType("TEXT");
 
                     b.Property<string>("SeriesName")
-                        .HasColumnType("TEXT");
+                        .HasColumnType("TEXT")
+                        .HasAnnotation("Jellyfin:UnboundedIndexedText", true);
 
                     b.Property<string>("SeriesPresentationUniqueKey")
-                        .HasColumnType("TEXT");
+                        .HasColumnType("TEXT")
+                        .HasAnnotation("Jellyfin:UnboundedIndexedText", true);
 
                     b.Property<string>("ShowId")
                         .HasColumnType("TEXT");
@@ -331,7 +341,8 @@ namespace Jellyfin.Server.Implementations.Migrations
                         .HasColumnType("INTEGER");
 
                     b.Property<string>("SortName")
-                        .HasColumnType("TEXT");
+                        .HasColumnType("TEXT")
+                        .HasAnnotation("Jellyfin:UnboundedIndexedText", true);
 
                     b.Property<DateTime?>("StartDate")
                         .HasColumnType("TEXT");
@@ -353,6 +364,7 @@ namespace Jellyfin.Server.Implementations.Migrations
 
                     b.Property<string>("Type")
                         .IsRequired()
+                        .HasMaxLength(256)
                         .HasColumnType("TEXT");
 
                     b.Property<string>("UnratedType")
@@ -499,11 +511,13 @@ namespace Jellyfin.Server.Implementations.Migrations
                         .HasColumnType("TEXT");
 
                     b.Property<string>("ProviderId")
+                        .HasMaxLength(128)
                         .HasColumnType("TEXT");
 
                     b.Property<string>("ProviderValue")
                         .IsRequired()
-                        .HasColumnType("TEXT");
+                        .HasColumnType("TEXT")
+                        .HasAnnotation("Jellyfin:UnboundedIndexedText", true);
 
                     b.HasKey("ItemId", "ProviderId");
 
@@ -574,6 +588,7 @@ namespace Jellyfin.Server.Implementations.Migrations
 
                     b.Property<string>("Key")
                         .IsRequired()
+                        .HasMaxLength(256)
                         .HasColumnType("TEXT");
 
                     b.Property<Guid>("UserId")
@@ -756,13 +771,15 @@ namespace Jellyfin.Server.Implementations.Migrations
 
                     b.Property<string>("CleanValue")
                         .IsRequired()
-                        .HasColumnType("TEXT");
+                        .HasColumnType("TEXT")
+                        .HasAnnotation("Jellyfin:UnboundedIndexedText", true);
 
                     b.Property<int>("Type")
                         .HasColumnType("INTEGER");
 
                     b.Property<string>("Value")
                         .IsRequired()
+                        .HasMaxLength(512)
                         .HasColumnType("TEXT");
 
                     b.HasKey("ItemValueId");
@@ -968,7 +985,8 @@ namespace Jellyfin.Server.Implementations.Migrations
                         .HasColumnType("TEXT");
 
                     b.Property<string>("Language")
-                        .HasColumnType("TEXT");
+                        .HasColumnType("TEXT")
+                        .HasAnnotation("Jellyfin:UnboundedIndexedText", true);
 
                     b.Property<float?>("Level")
                         .HasColumnType("REAL");
@@ -1029,7 +1047,13 @@ namespace Jellyfin.Server.Implementations.Migrations
 
                     b.Property<string>("Name")
                         .IsRequired()
-                        .HasColumnType("TEXT");
+                        .HasColumnType("TEXT")
+                        .HasAnnotation("Jellyfin:UnboundedIndexedText", true);
+
+                    b.Property<string>("NameLower")
+                        .IsRequired()
+                        .HasColumnType("TEXT")
+                        .HasAnnotation("Jellyfin:UnboundedIndexedText", true);
 
                     b.Property<string>("PersonType")
                         .HasColumnType("TEXT");
@@ -1037,6 +1061,8 @@ namespace Jellyfin.Server.Implementations.Migrations
                     b.HasKey("Id");
 
                     b.HasIndex("Name");
+
+                    b.HasIndex("NameLower");
 
                     b.ToTable("Peoples");
 
@@ -1052,6 +1078,7 @@ namespace Jellyfin.Server.Implementations.Migrations
                         .HasColumnType("TEXT");
 
                     b.Property<string>("Role")
+                        .HasMaxLength(400)
                         .HasColumnType("TEXT");
 
                     b.Property<int?>("ListOrder")
@@ -1141,6 +1168,7 @@ namespace Jellyfin.Server.Implementations.Migrations
 
                     b.Property<string>("AccessToken")
                         .IsRequired()
+                        .HasMaxLength(128)
                         .HasColumnType("TEXT");
 
                     b.Property<DateTime>("DateCreated")
@@ -1172,6 +1200,7 @@ namespace Jellyfin.Server.Implementations.Migrations
 
                     b.Property<string>("AccessToken")
                         .IsRequired()
+                        .HasMaxLength(128)
                         .HasColumnType("TEXT");
 
                     b.Property<string>("AppName")
@@ -1233,6 +1262,7 @@ namespace Jellyfin.Server.Implementations.Migrations
 
                     b.Property<string>("DeviceId")
                         .IsRequired()
+                        .HasMaxLength(256)
                         .HasColumnType("TEXT");
 
                     b.HasKey("Id");
@@ -1412,6 +1442,7 @@ namespace Jellyfin.Server.Implementations.Migrations
                         .HasColumnType("TEXT");
 
                     b.Property<string>("CustomDataKey")
+                        .HasMaxLength(256)
                         .HasColumnType("TEXT");
 
                     b.Property<int?>("AudioStreamIndex")

@@ -2,8 +2,12 @@
 
 using System;
 using System.Collections.Generic;
+using System.Data.Common;
 using System.Globalization;
+using System.IO;
 using System.Linq;
+using System.Net.Sockets;
+using System.Runtime.ExceptionServices;
 using System.Threading;
 using System.Threading.Tasks;
 using Jellyfin.Database.Implementations;
@@ -12,6 +16,8 @@ using Jellyfin.Extensions;
 using MediaBrowser.Controller;
 using MediaBrowser.Controller.Entities;
 using MediaBrowser.Controller.Entities.Audio;
+using MediaBrowser.Controller.Entities.TV;
+using MediaBrowser.Controller.LiveTv;
 using MediaBrowser.Controller.Persistence;
 using MediaBrowser.Controller.Playlists;
 using Microsoft.EntityFrameworkCore;
@@ -27,24 +33,36 @@ namespace Jellyfin.Server.Implementations.Item;
 /// </summary>
 public class ItemPersistenceService : IItemPersistenceService
 {
+    /// <summary>
+    /// The number of items that, saved one at a time after their batch failed, must each fail in the same way before
+    /// the error is taken to concern the whole batch rather than single items.
+    /// </summary>
+    internal const int IdenticalFailuresBeforeGivingUp = 3;
+
     private readonly IDbContextFactory<JellyfinDbContext> _dbProvider;
+    private readonly IJellyfinDatabaseProvider _databaseProvider;
     private readonly IServerApplicationHost _appHost;
     private readonly ILogger<ItemPersistenceService> _logger;
+    private readonly WriteConflictRetry _writeConflictRetry;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="ItemPersistenceService"/> class.
     /// </summary>
     /// <param name="dbProvider">The database context factory.</param>
+    /// <param name="databaseProvider">The database provider, which classifies write conflicts and tells the data errors of a failed save apart.</param>
     /// <param name="appHost">The application host.</param>
     /// <param name="logger">The logger.</param>
     public ItemPersistenceService(
         IDbContextFactory<JellyfinDbContext> dbProvider,
+        IJellyfinDatabaseProvider databaseProvider,
         IServerApplicationHost appHost,
         ILogger<ItemPersistenceService> logger)
     {
         _dbProvider = dbProvider;
+        _databaseProvider = databaseProvider;
         _appHost = appHost;
         _logger = logger;
+        _writeConflictRetry = new WriteConflictRetry(databaseProvider, logger);
     }
 
     /// <inheritdoc />
@@ -145,6 +163,17 @@ public class ItemPersistenceService : IItemPersistenceService
         context.LinkedChildren.WhereOneOrMany(relatedItems, e => e.ParentId).ExecuteDelete();
         context.LinkedChildren.WhereOneOrMany(relatedItems, e => e.ChildId).ExecuteDelete();
         var peopleIds = context.PeopleBaseItemMap.WhereOneOrMany(relatedItems, e => e.ItemId).Select(f => f.PeopleId).Distinct().ToArray();
+
+        // Some servers check a foreign key per row rather than at the end of the statement, so an item cannot be deleted
+        // while another item that is deleted in the same statement still names it as its owner. They also stop a cascade
+        // that is nested more than 15 levels deep, which the ParentId cascade of a deep folder tree reaches, so the rows
+        // are cut loose from their parents as well and the delete cascades one level into the tables that hold their data.
+        context.BaseItems
+            .WhereOneOrMany(relatedItems, e => e.Id)
+            .Where(e => e.OwnerId != null || e.ParentId != null)
+            .ExecuteUpdate(e => e
+                .SetProperty(f => f.OwnerId, (Guid?)null)
+                .SetProperty(f => f.ParentId, (Guid?)null));
         context.BaseItems.WhereOneOrMany(relatedItems, e => e.Id).ExecuteDelete();
         context.ItemValues.Where(e => !e.BaseItemsMap!.Any()).ExecuteDelete();
         context.KeyframeData.WhereOneOrMany(relatedItems, e => e.ItemId).ExecuteDelete();
@@ -172,7 +201,13 @@ public class ItemPersistenceService : IItemPersistenceService
     /// <inheritdoc />
     public void SaveItems(IReadOnlyList<BaseItemDto> items, CancellationToken cancellationToken)
     {
-        UpdateOrInsertItems(items, cancellationToken);
+        UpdateOrInsertItems(items, false, cancellationToken);
+    }
+
+    /// <inheritdoc />
+    public IReadOnlyCollection<Guid> SaveItemsSkippingFailures(IReadOnlyList<BaseItemDto> items, CancellationToken cancellationToken)
+    {
+        return UpdateOrInsertItems(items, true, cancellationToken);
     }
 
     /// <inheritdoc />
@@ -180,6 +215,7 @@ public class ItemPersistenceService : IItemPersistenceService
     {
         ArgumentNullException.ThrowIfNull(item);
 
+        RemoveNulCharacters(item.ImageInfos);
         var images = item.ImageInfos.Select(e => BaseItemMapper.MapImageToEntity(item.Id, e)).ToArray();
 
         var context = await _dbProvider.CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
@@ -223,6 +259,13 @@ public class ItemPersistenceService : IItemPersistenceService
         ArgumentNullException.ThrowIfNull(item);
         cancellationToken.ThrowIfCancellationRequested();
 
+        await _writeConflictRetry
+            .ExecuteAsync(ct => ReattachUserDataOnceAsync(item, ct), cancellationToken)
+            .ConfigureAwait(false);
+    }
+
+    private async Task ReattachUserDataOnceAsync(BaseItemDto item, CancellationToken cancellationToken)
+    {
         var dbContext = await _dbProvider.CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
 
         await using (dbContext.ConfigureAwait(false))
@@ -230,11 +273,15 @@ public class ItemPersistenceService : IItemPersistenceService
             var transaction = await dbContext.Database.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
             await using (transaction.ConfigureAwait(false))
             {
-                var userKeys = item.GetUserDataKeys().Distinct().ToList();
+                var rawKeys = item.GetUserDataKeys().ToList();
+                var userKeys = rawKeys.Select(e => KeyNormalizer.NormalizeUserDataKey(e.RemoveNullCharacters())).Distinct().ToList();
+
+                // A row detached before NUL characters were removed is stored under the key as it was reported.
+                var lookupKeys = rawKeys.Select(KeyNormalizer.NormalizeUserDataKey).Concat(userKeys).Distinct().ToList();
 
                 var detached = await dbContext.UserData
                     .Where(e => e.ItemId == BaseItemRepository.PlaceholderId)
-                    .Where(e => userKeys.Contains(e.CustomDataKey))
+                    .Where(e => lookupKeys.Contains(e.CustomDataKey))
                     .ToListAsync(cancellationToken)
                     .ConfigureAwait(false);
 
@@ -275,7 +322,7 @@ public class ItemPersistenceService : IItemPersistenceService
                     .ThenByDescending(e => e.PlayCount)
                     .ThenByDescending(e => e.PlaybackPositionTicks)
                     .First(),
-                Keys: userKeys.Union(g.Select(e => e.CustomDataKey)).ToList()))
+                Keys: userKeys.Union(g.Select(e => KeyNormalizer.NormalizeUserDataKey(e.CustomDataKey.RemoveNullCharacters()))).ToList()))
             .ToList();
 
         dbContext.UserData.RemoveRange(detached);
@@ -310,7 +357,7 @@ public class ItemPersistenceService : IItemPersistenceService
         await dbContext.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
     }
 
-    private void UpdateOrInsertItems(IReadOnlyList<BaseItemDto> items, CancellationToken cancellationToken)
+    private IReadOnlyCollection<Guid> UpdateOrInsertItems(IReadOnlyList<BaseItemDto> items, bool skipFailures, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(items);
         cancellationToken.ThrowIfCancellationRequested();
@@ -318,6 +365,9 @@ public class ItemPersistenceService : IItemPersistenceService
         var tuples = new List<(BaseItemDto Item, List<Guid>? AncestorIds, BaseItemDto TopParent, IEnumerable<string> UserDataKey, List<string> InheritedTags)>();
         foreach (var item in items.GroupBy(e => e.Id).Select(e => e.Last()).Where(e => e.Id != BaseItemRepository.PlaceholderId))
         {
+            RemoveNulCharacters(item);
+            DropOverlongProviderIds(item);
+
             var ancestorIds = item.SupportsAncestors ?
                 item.GetAncestorIds().Distinct().ToList() :
                 null;
@@ -330,6 +380,20 @@ public class ItemPersistenceService : IItemPersistenceService
             tuples.Add((item, ancestorIds, topParent, userdataKey, inheritedTags));
         }
 
+        try
+        {
+            _writeConflictRetry.Execute(() => SaveItemTuples(tuples), cancellationToken);
+        }
+        catch (DbUpdateException ex) when (skipFailures && tuples.Count > 1 && IsDataError(ex))
+        {
+            return SaveItemTuplesSkippingFailures(tuples, ex, cancellationToken);
+        }
+
+        return [];
+    }
+
+    private void SaveItemTuples(List<(BaseItemDto Item, List<Guid>? AncestorIds, BaseItemDto TopParent, IEnumerable<string> UserDataKey, List<string> InheritedTags)> tuples)
+    {
         using var context = _dbProvider.CreateDbContext();
         using var transaction = context.Database.BeginTransaction();
 
@@ -789,6 +853,486 @@ public class ItemPersistenceService : IItemPersistenceService
         transaction.Commit();
     }
 
+    /// <summary>
+    /// Saves the items of a batch that failed on the data of its rows again, each with what depends on it in its own
+    /// transaction, so that the rows of one item the engine refuses cost that item and not the whole batch.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The items are saved in units: an item together with the items of the batch that refer to it by
+    /// <see cref="BaseItemDto.ParentId"/> or <see cref="BaseItemDto.OwnerId"/>, such as a video and the alternate
+    /// versions that follow it. A unit is saved as the batch was, so that the links between its items are resolved
+    /// against rows written in the same transaction. If a unit of several items fails, its items are saved one at a
+    /// time, and an item whose parent or owner in the batch was not saved is skipped. An item saved that way before
+    /// the items that belong to it cannot link to them yet, so once they are saved it is saved again, which links it
+    /// to the ones that were. Units and items keep the order of the batch; the items of a unit are not sorted by
+    /// what they refer to, as the callers already put an item before the items that belong to it.
+    /// </para>
+    /// <para>
+    /// When the first <see cref="IdenticalFailuresBeforeGivingUp"/> items saved fail in the same way, the error is
+    /// taken to concern the whole batch rather than single items, and the exception of the batch is thrown again. It
+    /// is thrown again as well when no item could be saved at all. A failure that is not a data error, or a
+    /// cancellation, ends the attempt at once with its own exception. Either way, the units saved before it stay
+    /// saved, while the caller, which only learns of the exception, neither caches nor announces them; a later scan
+    /// finds them in the database.
+    /// </para>
+    /// </remarks>
+    /// <param name="tuples">The items of the batch, in its order.</param>
+    /// <param name="batchException">The exception the batch failed with.</param>
+    /// <param name="cancellationToken">The cancellation token.</param>
+    /// <returns>The ids of the items that were not saved.</returns>
+    private HashSet<Guid> SaveItemTuplesSkippingFailures(
+        List<(BaseItemDto Item, List<Guid>? AncestorIds, BaseItemDto TopParent, IEnumerable<string> UserDataKey, List<string> InheritedTags)> tuples,
+        DbUpdateException batchException,
+        CancellationToken cancellationToken)
+    {
+        _logger.LogWarning(
+            "Saving {Count} items together failed with {ExceptionType}, saving them one at a time",
+            tuples.Count,
+            GetInnermostDbException(batchException)?.GetType().FullName);
+
+        var notSaved = new HashSet<Guid>();
+        var savedCount = 0;
+        var countedSaves = 0;
+        string? firstFailure = null;
+        var failuresAlike = true;
+
+        foreach (var unitIndexes in GetSaveUnits(tuples.Select(t => t.Item).ToList()))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var unit = unitIndexes.Select(i => tuples[i]).ToList();
+
+            // A unit that is the whole batch has already failed as such.
+            if (unit.Count > 1 && unit.Count < tuples.Count && TrySave(unit, out _))
+            {
+                savedCount += unit.Count;
+                CountSave(null);
+                continue;
+            }
+
+            var savedInUnit = new List<(BaseItemDto Item, List<Guid>? AncestorIds, BaseItemDto TopParent, IEnumerable<string> UserDataKey, List<string> InheritedTags)>();
+            foreach (var tuple in unit)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+
+                var item = tuple.Item;
+                var dependency = GetBatchDependencies(item).FirstOrDefault(notSaved.Contains);
+                if (!dependency.IsEmpty())
+                {
+                    notSaved.Add(item.Id);
+                    _logger.LogError(
+                        "Item {ItemId} ({ItemPath}) is not saved, because item {DependencyId} of the same batch, which it belongs to, could not be saved",
+                        item.Id,
+                        item.Path,
+                        dependency);
+                    continue;
+                }
+
+                if (TrySave([tuple], out var failure))
+                {
+                    savedCount++;
+                    savedInUnit.Add(tuple);
+                    CountSave(null);
+                    continue;
+                }
+
+                notSaved.Add(item.Id);
+                _logger.LogError(
+                    failure,
+                    "Item {ItemId} ({ItemPath}) could not be saved, and the other items of its batch are saved without it",
+                    item.Id,
+                    item.Path);
+                CountSave(failure);
+            }
+
+            // A video saved before its alternate versions could not link to them, so it is saved again now that the
+            // ones that could be saved exist.
+            foreach (var tuple in savedInUnit.Where(t => savedInUnit.Any(other => GetBatchDependencies(other.Item).Contains(t.Item.Id))))
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+
+                if (!TrySave([tuple], out var failure))
+                {
+                    _logger.LogWarning(
+                        failure,
+                        "Item {ItemId} ({ItemPath}) is saved, but saving it again to link it to the items of its batch that belong to it failed",
+                        tuple.Item.Id,
+                        tuple.Item.Path);
+                }
+            }
+        }
+
+        if (savedCount == 0)
+        {
+            _logger.LogError("None of the {Count} items of the batch could be saved", tuples.Count);
+            ExceptionDispatchInfo.Throw(batchException);
+        }
+
+        return notSaved;
+
+        bool TrySave(List<(BaseItemDto Item, List<Guid>? AncestorIds, BaseItemDto TopParent, IEnumerable<string> UserDataKey, List<string> InheritedTags)> unit, out DbUpdateException? failure)
+        {
+            try
+            {
+                _writeConflictRetry.Execute(() => SaveItemTuples(unit), cancellationToken);
+                failure = null;
+                return true;
+            }
+            catch (DbUpdateException ex) when (IsDataError(ex))
+            {
+                failure = ex;
+                return false;
+            }
+        }
+
+        void CountSave(DbUpdateException? failure)
+        {
+            if (++countedSaves > IdenticalFailuresBeforeGivingUp)
+            {
+                return;
+            }
+
+            if (failure is null)
+            {
+                failuresAlike = false;
+                return;
+            }
+
+            // The failures are compared by the type of the exception and its SQLSTATE, not by the error codes of a
+            // provider. A client that reports no SQLSTATE leaves the type alone, so there any failures of the first
+            // items count as alike, which errs towards throwing the exception of the batch, as a failed batch did before.
+            var inner = GetInnermostDbException(failure);
+            var kind = inner?.GetType().FullName + "/" + inner?.SqlState;
+            firstFailure ??= kind;
+            failuresAlike &= string.Equals(kind, firstFailure, StringComparison.Ordinal);
+            if (failuresAlike && countedSaves == IdenticalFailuresBeforeGivingUp)
+            {
+                _logger.LogError(
+                    "The first {Count} items of the batch failed alike, so the error is taken to concern the whole batch",
+                    countedSaves);
+                ExceptionDispatchInfo.Throw(batchException);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Determines whether a failed save was refused for the data of its rows, as opposed to failing for the
+    /// connection, the storage, a time-out or a cancellation, which no item can be saved through either.
+    /// </summary>
+    /// <param name="exception">The exception the save failed with.</param>
+    /// <returns><c>true</c> if the engine refused the data of the rows; otherwise <c>false</c>.</returns>
+    private bool IsDataError(DbUpdateException exception)
+    {
+        for (Exception? current = exception; current is not null; current = current.InnerException)
+        {
+            if (current is OperationCanceledException or TimeoutException or IOException or SocketException)
+            {
+                return false;
+            }
+        }
+
+        // A write conflict the retry policy gave up on stays the failure of the batch, as before: it says nothing about
+        // the data of a single item, even where the provider also counts it a data error.
+        return GetInnermostDbException(exception) is { IsTransient: false }
+            && !_databaseProvider.IsRetryableWriteConflict(exception)
+            && _databaseProvider.IsDataError(exception);
+    }
+
+    private static DbException? GetInnermostDbException(Exception exception)
+    {
+        DbException? innermost = null;
+        for (Exception? current = exception; current is not null; current = current.InnerException)
+        {
+            if (current is DbException dbException)
+            {
+                innermost = dbException;
+            }
+        }
+
+        return innermost;
+    }
+
+    /// <summary>
+    /// Splits a batch into the units that are saved together when the batch fails: each item with the items of the
+    /// batch that it refers to, or that refer to it, by <see cref="BaseItemDto.ParentId"/> or
+    /// <see cref="BaseItemDto.OwnerId"/>, in the order of the batch.
+    /// </summary>
+    /// <param name="items">The items of the batch, which have distinct ids.</param>
+    /// <returns>
+    /// The units as the indexes of their items in the batch, ordered by their first item, each in the order of the batch.
+    /// </returns>
+    internal static List<List<int>> GetSaveUnits(IReadOnlyList<BaseItemDto> items)
+    {
+        var indexById = new Dictionary<Guid, int>();
+        for (var i = 0; i < items.Count; i++)
+        {
+            indexById[items[i].Id] = i;
+        }
+
+        // Each item points at the first item of its unit.
+        var first = Enumerable.Range(0, items.Count).ToArray();
+        int Find(int index)
+        {
+            while (first[index] != index)
+            {
+                first[index] = first[first[index]];
+                index = first[index];
+            }
+
+            return index;
+        }
+
+        for (var i = 0; i < items.Count; i++)
+        {
+            foreach (var dependency in GetBatchDependencies(items[i]))
+            {
+                if (indexById.TryGetValue(dependency, out var j))
+                {
+                    var (a, b) = (Find(i), Find(j));
+                    first[Math.Max(a, b)] = Math.Min(a, b);
+                }
+            }
+        }
+
+        var units = new SortedDictionary<int, List<int>>();
+        for (var i = 0; i < items.Count; i++)
+        {
+            var key = Find(i);
+            if (!units.TryGetValue(key, out var unit))
+            {
+                units[key] = unit = [];
+            }
+
+            unit.Add(i);
+        }
+
+        return [.. units.Values];
+    }
+
+    /// <summary>
+    /// Gets the items an item refers to by a foreign key, which have to be saved before it.
+    /// </summary>
+    /// <param name="item">The item.</param>
+    /// <returns>Its parent and its owner, where it has them.</returns>
+    private static IEnumerable<Guid> GetBatchDependencies(BaseItemDto item)
+    {
+        if (!item.ParentId.IsEmpty())
+        {
+            yield return item.ParentId;
+        }
+
+        if (!item.OwnerId.IsEmpty())
+        {
+            yield return item.OwnerId;
+        }
+    }
+
+    /// <summary>
+    /// Removes NUL characters from the item itself, from every string that <see cref="BaseItemMapper"/> copies into a column.
+    /// Saving cleans the mapped copy, but the item is what stays in memory, and what is later matched against
+    /// the stored rows by its keys: a series finds its seasons and episodes by its presentation key, and the
+    /// external ids are looked up as they are. If only the copy was cleaned, the item would no longer find the rows it saved.
+    /// </summary>
+    /// <param name="item">The item about to be mapped.</param>
+    private static void RemoveNulCharacters(BaseItemDto item)
+    {
+        // The name and the forced sort name reset the sort name, so they are cleaned before it is read.
+        if (HasNulCharacter(item.Name))
+        {
+            item.Name = item.Name.RemoveNullCharacters();
+        }
+
+        if (HasNulCharacter(item.ForcedSortName))
+        {
+            item.ForcedSortName = item.ForcedSortName.RemoveNullCharacters();
+        }
+
+        if (HasNulCharacter(item.SortName))
+        {
+            item.SortName = item.SortName.RemoveNullCharacters();
+        }
+
+        if (HasNulCharacter(item.Path))
+        {
+            item.Path = item.Path.RemoveNullCharacters();
+        }
+
+        // The setter looks the language up, so it is only called for a value that has to change.
+        if (HasNulCharacter(item.OriginalLanguage))
+        {
+            item.OriginalLanguage = item.OriginalLanguage.RemoveNullCharacters();
+        }
+
+        item.CustomRating = item.CustomRating?.RemoveNullCharacters();
+        item.OfficialRating = item.OfficialRating?.RemoveNullCharacters();
+        item.Overview = item.Overview?.RemoveNullCharacters();
+        item.PreferredMetadataLanguage = item.PreferredMetadataLanguage?.RemoveNullCharacters();
+        item.PreferredMetadataCountryCode = item.PreferredMetadataCountryCode?.RemoveNullCharacters();
+        item.PresentationUniqueKey = item.PresentationUniqueKey?.RemoveNullCharacters();
+        item.OriginalTitle = item.OriginalTitle?.RemoveNullCharacters();
+        item.Album = item.Album?.RemoveNullCharacters();
+        item.ExternalSeriesId = item.ExternalSeriesId?.RemoveNullCharacters();
+        item.Tagline = item.Tagline?.RemoveNullCharacters();
+        item.ExternalId = item.ExternalId?.RemoveNullCharacters();
+
+        // Stored in one column each, joined with a separator.
+        if (HasNulCharacter(item.Genres))
+        {
+            item.Genres = RemoveNulCharacters(item.Genres);
+        }
+
+        if (HasNulCharacter(item.ProductionLocations))
+        {
+            item.ProductionLocations = RemoveNulCharacters(item.ProductionLocations);
+        }
+
+        if (HasNulCharacter(item.Studios))
+        {
+            item.Studios = RemoveNulCharacters(item.Studios);
+        }
+
+        if (HasNulCharacter(item.Tags))
+        {
+            item.Tags = RemoveNulCharacters(item.Tags);
+        }
+
+        if (item.ProviderIds is { } providerIds)
+        {
+            // Only the entries that change are touched, so the ids of an item other threads may be reading
+            // are never cleared and refilled.
+            foreach (var (key, value) in providerIds.ToList())
+            {
+                if (!HasNulCharacter(key) && !HasNulCharacter(value))
+                {
+                    continue;
+                }
+
+                var cleanKey = key.RemoveNullCharacters();
+                var cleanValue = value?.RemoveNullCharacters();
+
+                // An id that held nothing but NUL characters names nothing once they are gone, so it is dropped.
+                var drop = cleanKey.Length == 0 || (HasNulCharacter(value) && cleanValue?.Length == 0);
+                if (drop)
+                {
+                    providerIds.Remove(key);
+                }
+                else if (string.Equals(key, cleanKey, StringComparison.Ordinal))
+                {
+                    providerIds[key] = cleanValue!;
+                }
+                else
+                {
+                    // An id stored under the clean key already wins over one that only differs by a NUL.
+                    providerIds.TryAdd(cleanKey, cleanValue!);
+                    providerIds.Remove(key);
+                }
+            }
+        }
+
+        RemoveNulCharacters(item.ImageInfos);
+
+        if (item is IHasProgramAttributes hasProgramAttributes)
+        {
+            hasProgramAttributes.EpisodeTitle = hasProgramAttributes.EpisodeTitle?.RemoveNullCharacters();
+        }
+
+        if (item is LiveTvChannel liveTvChannel)
+        {
+            liveTvChannel.ServiceName = liveTvChannel.ServiceName?.RemoveNullCharacters();
+        }
+
+        if (item is IHasSeries hasSeries)
+        {
+            hasSeries.SeriesName = hasSeries.SeriesName?.RemoveNullCharacters();
+            hasSeries.SeriesPresentationUniqueKey = hasSeries.SeriesPresentationUniqueKey?.RemoveNullCharacters();
+        }
+
+        if (item is Episode episode)
+        {
+            episode.SeasonName = episode.SeasonName?.RemoveNullCharacters();
+        }
+
+        if (item is LiveTvProgram program)
+        {
+            program.ShowId = program.ShowId?.RemoveNullCharacters();
+        }
+
+        if (item is IHasArtist hasArtist && HasNulCharacter(hasArtist.Artists))
+        {
+            hasArtist.Artists = RemoveNulCharacters(hasArtist.Artists);
+        }
+
+        if (item is IHasAlbumArtist hasAlbumArtist && HasNulCharacter(hasAlbumArtist.AlbumArtists))
+        {
+            hasAlbumArtist.AlbumArtists = RemoveNulCharacters(hasAlbumArtist.AlbumArtists);
+        }
+    }
+
+    // The name of a provider is part of the key of its row, so an id with a longer name cannot be stored. It is
+    // removed from the item, so that it does not fail the save of the items saved with it.
+    private void DropOverlongProviderIds(BaseItemDto item)
+    {
+        if (item.ProviderIds is not { } providerIds)
+        {
+            return;
+        }
+
+        foreach (var key in providerIds.Keys.Where(e => e.Length > KeyNormalizer.ProviderIdMaxLength).ToList())
+        {
+            _logger.LogWarning(
+                "Dropped a provider id of item {ItemId} whose name is {Length} characters long, the maximum is {MaxLength}",
+                item.Id,
+                key.Length,
+                KeyNormalizer.ProviderIdMaxLength);
+            providerIds.Remove(key);
+        }
+    }
+
+    private static void RemoveNulCharacters(ItemImageInfo[]? images)
+    {
+        if (images is null)
+        {
+            return;
+        }
+
+        foreach (var image in images)
+        {
+            if (HasNulCharacter(image.Path))
+            {
+                image.Path = image.Path.RemoveNullCharacters();
+            }
+        }
+    }
+
+    private static string[] RemoveNulCharacters(IEnumerable<string> values)
+    {
+        // An entry that held nothing but NUL characters names nothing once they are gone, so it is dropped.
+        // Entries that become equal are kept once, as the first one: the columns de-duplicate them when saving.
+        var cleaned = new List<string>();
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var value in values)
+        {
+            var clean = value?.RemoveNullCharacters()!;
+            if ((!HasNulCharacter(value) || clean.Length > 0) && seen.Add(clean))
+            {
+                cleaned.Add(clean);
+            }
+        }
+
+        return cleaned.ToArray();
+    }
+
+    private static bool HasNulCharacter(IEnumerable<string>? values)
+    {
+        return values is not null && values.Any(HasNulCharacter);
+    }
+
+    private static bool HasNulCharacter(string? value)
+    {
+        return value is not null && value.Contains('\0', StringComparison.Ordinal);
+    }
+
     private static List<(ItemValueType MagicNumber, string Value)> GetItemValuesToSave(BaseItemDto item, List<string> inheritedTags)
     {
         var list = new List<(ItemValueType, string)>();
@@ -809,8 +1353,13 @@ public class ItemPersistenceService : IItemPersistenceService
 
         list.AddRange(inheritedTags.Select(i => (ItemValueType.InheritedTags, i)));
 
-        list.RemoveAll(i => string.IsNullOrWhiteSpace(i.Item2));
-
-        return list;
+        // Cleaned and cut before the values are de-duplicated and matched against stored rows, so that a value with a
+        // NUL maps to the row stored without it, and values that are equal up to the length of the column are one
+        // value. A row stored earlier may still hold a NUL, or be longer, and is not matched.
+        return list
+            .Where(i => !string.IsNullOrWhiteSpace(i.Item2))
+            .Select(i => (i.Item1, KeyNormalizer.CutItemValue(i.Item2.RemoveNullCharacters())))
+            .Where(i => !string.IsNullOrWhiteSpace(i.Item2))
+            .ToList();
     }
 }

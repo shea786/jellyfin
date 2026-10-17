@@ -5,19 +5,18 @@ using System.Linq;
 using Emby.Server.Implementations.Data;
 using Jellyfin.Data.Enums;
 using Jellyfin.Database.Implementations.Entities;
+using Jellyfin.Database.Testing;
 using Jellyfin.Server.Implementations.Item;
 using MediaBrowser.Controller.Entities;
 using MediaBrowser.Controller.Persistence;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
-using Microsoft.EntityFrameworkCore.Migrations;
-using Microsoft.EntityFrameworkCore.Migrations.Operations;
 using Moq;
 using Xunit;
 
 namespace Jellyfin.Server.Implementations.Tests.Item;
 
-public sealed class PeopleUpdateQueryTests : SqliteDbTestFixture
+public sealed class PeopleUpdateQueryTests : JellyfinDbTestFixture
 {
     private readonly CommandRecorder _recorder;
     private readonly Guid _itemId = Guid.NewGuid();
@@ -66,26 +65,108 @@ public sealed class PeopleUpdateQueryTests : SqliteDbTestFixture
         Assert.Equal(2, Assert.Single(context.PeopleBaseItemMap).SortOrder);
     }
 
-    [Fact]
+    [ProviderFact(TestDbProvider.Sqlite)]
     public void UpdatePeople_GeneratedSqlUsesPeopleNameIndex()
     {
-        ApplyMigration(new Jellyfin.Server.Implementations.Migrations.AddPeopleNameLowerIndex());
+        var query = RecordLookup();
+        Assert.Contains(Explain(query), line => line.Contains("SEARCH p USING INDEX IX_Peoples_NameLower", StringComparison.Ordinal));
+    }
+
+    [ProviderFact(TestDbProvider.Postgres)]
+    public void UpdatePeople_GeneratedSqlUsesPeopleNameIndex_OnPostgres()
+    {
+        var query = RecordLookup();
+        Assert.Contains(ExplainOnPostgres(query), line => line.Contains("IX_Peoples_NameLower", StringComparison.Ordinal));
+    }
+
+    [ProviderFact(TestDbProvider.Sqlite)]
+    public void GetPeople_NameStartsWith_GeneratedSqlUsesPeopleNameIndex()
+    {
+        var query = RecordPrefixLookup();
+        Assert.Contains(Explain(query), line => line.Contains("INDEX IX_Peoples_NameLower", StringComparison.Ordinal));
+    }
+
+    [ProviderFact(TestDbProvider.Postgres)]
+    public void GetPeople_NameStartsWith_GeneratedSqlUsesPeopleNameIndex_OnPostgres()
+    {
+        var query = RecordPrefixLookup();
+        Assert.Contains(ExplainOnPostgres(query), line => line.Contains("IX_Peoples_NameLower", StringComparison.Ordinal));
+    }
+
+    [Theory]
+    [InlineData("\n")]
+    [InlineData("\r\n")]
+    public void IsPeopleFilter_StatementWithAnyLineEnding_IsRecognised(string lineEnding)
+    {
+        var sql = string.Join(lineEnding, "SELECT \"p\".\"Id\"", "FROM \"Peoples\" AS \"p\"", "WHERE \"p\".\"NameLower\" = @name");
+
+        Assert.True(IsPeopleFilter(new RecordedCommand(sql, [])));
+        Assert.StartsWith("WHERE p.\"NameLower\"", WhereClause(new RecordedCommand(sql, [])), StringComparison.Ordinal);
+    }
+
+    private RecordedCommand RecordPrefixLookup()
+    {
+        _recorder.Commands.Clear();
+        _people.GetPeople(new InternalPeopleQuery { NameStartsWith = "Émi", EnableTotalRecordCount = false });
+        var query = _recorder.Commands.Last(IsPeopleFilter);
+        Assert.Contains("p.\"NameLower\"", WhereClause(query), StringComparison.Ordinal);
+        Assert.DoesNotContain("lower(", query.Sql, StringComparison.OrdinalIgnoreCase);
+        return query;
+    }
+
+    private RecordedCommand RecordLookup()
+    {
         _recorder.Commands.Clear();
         _people.UpdatePeople(_itemId, [
             new PersonInfo { Name = "Actor A", Type = PersonKind.Actor },
             new PersonInfo { Name = "Actor B", Type = PersonKind.Actor }
         ]);
-        var query = Assert.Single(_recorder.Commands, c => c.Sql.Contains("lower(\"p\".\"Name\")", StringComparison.Ordinal));
-        Assert.Contains(Explain(query), line => line.Contains("SEARCH p USING INDEX IX_Peoples_NameLower", StringComparison.Ordinal));
+        var query = Assert.Single(_recorder.Commands, IsPeopleFilter);
+        Assert.Contains("p.\"NameLower\"", WhereClause(query), StringComparison.Ordinal);
+        Assert.DoesNotContain("lower(", query.Sql, StringComparison.OrdinalIgnoreCase);
+        return query;
     }
 
-    private void ApplyMigration(Migration migration)
+    private static bool IsPeopleFilter(RecordedCommand command) => command.Sql.StartsWith("SELECT", StringComparison.Ordinal)
+        && Normalised(command.Sql).Contains("FROM \"Peoples\" AS p\nWHERE", StringComparison.Ordinal);
+
+    private static string WhereClause(RecordedCommand command)
+    {
+        var sql = Normalised(command.Sql);
+        return sql[sql.IndexOf("WHERE", StringComparison.Ordinal)..];
+    }
+
+    private static string Normalised(string sql) => sql
+        .Replace("\r\n", "\n", StringComparison.Ordinal)
+        .Replace("\"p\"", "p", StringComparison.Ordinal);
+
+    private string[] ExplainOnPostgres(RecordedCommand query)
     {
         using var context = CreateDbContext();
-        foreach (var operation in migration.UpOperations.Cast<SqlOperation>())
+        context.Database.OpenConnection();
+
+        // An empty table is always scanned, so the planner is told that a scan is the worse choice.
+        context.Database.ExecuteSqlRaw("SET enable_seqscan = off");
+        using var command = context.Database.GetDbConnection().CreateCommand();
+#pragma warning disable CA2100 // query.Sql is generated by EF Core; query values remain bound parameters.
+        command.CommandText = "EXPLAIN " + query.Sql;
+#pragma warning restore CA2100
+        foreach (var value in query.Parameters)
         {
-            context.Database.ExecuteSqlRaw(operation.Sql);
+            var parameter = command.CreateParameter();
+            parameter.ParameterName = value.Name;
+            parameter.Value = value.Value;
+            command.Parameters.Add(parameter);
         }
+
+        using var reader = command.ExecuteReader();
+        var plan = new List<string>();
+        while (reader.Read())
+        {
+            plan.Add(reader.GetString(0));
+        }
+
+        return plan.ToArray();
     }
 
     private string[] Explain(RecordedCommand query)

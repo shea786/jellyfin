@@ -913,7 +913,7 @@ namespace Jellyfin.Server.Implementations.Users
                     user.SetPreference(PreferenceKind.BlockedTags, policy.BlockedTags);
                     user.SetPreference(PreferenceKind.AllowedTags, policy.AllowedTags);
                     user.SetPreference(PreferenceKind.EnabledChannels, policy.EnabledChannels);
-                    user.SetPreference(PreferenceKind.EnabledDevices, policy.EnabledDevices);
+                    user.SetPreference(PreferenceKind.EnabledDevices, KeyNormalizer.NormalizeDeviceIds(policy.EnabledDevices));
                     user.SetPreference(PreferenceKind.EnabledFolders, policy.EnabledFolders);
                     user.SetPreference(PreferenceKind.EnableContentDeletionFromFolders, policy.EnableContentDeletionFromFolders);
 
@@ -962,6 +962,11 @@ namespace Jellyfin.Server.Implementations.Users
 
         internal static void ThrowIfInvalidUsername(string name)
         {
+            if (name is not null && name.Length > KeyNormalizer.UsernameMaxLength)
+            {
+                throw new ArgumentException($"Usernames can contain at most {KeyNormalizer.UsernameMaxLength} characters", nameof(name));
+            }
+
             if (!string.IsNullOrWhiteSpace(name) && ValidUsernameRegex().IsMatch(name) && !string.Equals(name, ".", StringComparison.Ordinal) && !string.Equals(name, "..", StringComparison.Ordinal))
             {
                 return;

@@ -8,6 +8,7 @@ using Emby.Server.Implementations.Data;
 using Jellyfin.Database.Implementations;
 using Jellyfin.Database.Implementations.Entities;
 using Jellyfin.Database.Implementations.Enums;
+using Jellyfin.Server.Implementations;
 using MediaBrowser.Controller;
 using MediaBrowser.Controller.Library;
 using MediaBrowser.Model.Dto;
@@ -85,7 +86,7 @@ namespace Jellyfin.Server.Migrations.Routines
                 return;
             }
 
-            using (var connection = new SqliteConnection($"Filename={dbFilePath}"))
+            using (var connection = new SqliteConnection(new SqliteConnectionStringBuilder { DataSource = dbFilePath, Pooling = false }.ToString()))
             {
                 connection.Open();
 
@@ -104,7 +105,8 @@ namespace Jellyfin.Server.Migrations.Routines
                 var results = connection.Query("SELECT * FROM userdisplaypreferences");
                 foreach (var result in results)
                 {
-                    var dto = JsonSerializer.Deserialize<DisplayPreferencesDto>(result.GetStream(3), _jsonOptions);
+                    using var stream = result.GetStream(3);
+                    var dto = JsonSerializer.Deserialize<DisplayPreferencesDto>(stream, _jsonOptions);
                     if (dto is null)
                     {
                         continue;
@@ -113,6 +115,12 @@ namespace Jellyfin.Server.Migrations.Routines
                     var itemId = result.GetGuid(1);
                     var dtoUserId = itemId;
                     var client = result.GetString(2);
+                    if (client.Length > KeyNormalizer.DisplayPreferencesClientMaxLength)
+                    {
+                        _logger.LogWarning("Skipping the display preferences of a client name of {Length} characters, the maximum is {Max}", client.Length, KeyNormalizer.DisplayPreferencesClientMaxLength);
+                        continue;
+                    }
+
                     var displayPreferencesKey = $"{dtoUserId}|{itemId}|{client}";
                     if (displayPrefs.Contains(displayPreferencesKey))
                     {
@@ -208,6 +216,12 @@ namespace Jellyfin.Server.Migrations.Routines
 
                     foreach (var (key, value) in dto.CustomPrefs)
                     {
+                        if (key.Length > KeyNormalizer.DisplayPreferencesKeyMaxLength)
+                        {
+                            _logger.LogWarning("Skipping a custom display preference with a key of {Length} characters, the maximum is {Max}", key.Length, KeyNormalizer.DisplayPreferencesKeyMaxLength);
+                            continue;
+                        }
+
                         // Custom display preferences can have a key collision.
                         var indexKey = $"{displayPreferences.UserId}|{itemId}|{displayPreferences.Client}|{key}";
                         if (!customDisplayPrefs.Contains(indexKey))

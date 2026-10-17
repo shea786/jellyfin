@@ -1,17 +1,21 @@
 using System;
 using System.Collections.Generic;
+using System.Collections.ObjectModel;
 using System.IO;
 using System.Linq;
 using System.Reflection;
 using Jellyfin.Database.Implementations;
 using Jellyfin.Database.Implementations.DbConfiguration;
 using Jellyfin.Database.Implementations.Locking;
+using Jellyfin.Database.Providers.MySql;
+using Jellyfin.Database.Providers.Postgres;
 using Jellyfin.Database.Providers.Sqlite;
 using MediaBrowser.Common.Configuration;
 using MediaBrowser.Controller.Configuration;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using JellyfinDbProviderFactory = System.Func<System.IServiceProvider, Jellyfin.Database.Implementations.IJellyfinDatabaseProvider>;
 
 namespace Jellyfin.Server.Implementations.Extensions;
@@ -21,9 +25,13 @@ namespace Jellyfin.Server.Implementations.Extensions;
 /// </summary>
 public static class ServiceCollectionExtensions
 {
+    private const string ConnectionStringOverrideKey = "database:ConnectionString";
+
     private static IEnumerable<Type> DatabaseProviderTypes()
     {
         yield return typeof(SqliteDatabaseProvider);
+        yield return typeof(PostgresDatabaseProvider);
+        yield return typeof(MySqlDatabaseProvider);
     }
 
     private static IDictionary<string, JellyfinDbProviderFactory> GetSupportedDbProviders()
@@ -42,6 +50,24 @@ public static class ServiceCollectionExtensions
         }
 
         return items;
+    }
+
+    internal static DatabaseConfigurationOptions WithConnectionStringOverride(DatabaseConfigurationOptions source, string connectionString)
+    {
+        var customProviderOptions = source.CustomProviderOptions;
+        return new DatabaseConfigurationOptions
+        {
+            DatabaseType = source.DatabaseType,
+            LockingBehavior = source.LockingBehavior,
+            CustomProviderOptions = new CustomDatabaseOptions
+            {
+                PluginName = customProviderOptions?.PluginName ?? string.Empty,
+                PluginAssembly = customProviderOptions?.PluginAssembly ?? string.Empty,
+                ConnectionString = connectionString,
+                Options = new Collection<CustomDatabaseOption>(
+                    customProviderOptions?.Options?.Select(option => new CustomDatabaseOption { Key = option.Key, Value = option.Value }).ToList() ?? [])
+            }
+        };
     }
 
     private static JellyfinDbProviderFactory? LoadDatabasePlugin(CustomDatabaseOptions customProviderOptions, IApplicationPaths applicationPaths)
@@ -121,7 +147,26 @@ public static class ServiceCollectionExtensions
             }
         }
 
-        serviceCollection.AddSingleton<IJellyfinDatabaseProvider>(providerFactory!);
+        // The override is given to the provider as a copy. The cached and stored configuration must never hold it.
+        var providerConfiguration = efCoreConfiguration;
+        var connectionStringOverride = configuration.GetValue<string>(ConnectionStringOverrideKey);
+        var hasConnectionStringOverride = !string.IsNullOrWhiteSpace(connectionStringOverride);
+        if (hasConnectionStringOverride)
+        {
+            providerConfiguration = WithConnectionStringOverride(efCoreConfiguration, connectionStringOverride!);
+        }
+
+        serviceCollection.AddSingleton<IJellyfinDatabaseProvider>(services =>
+        {
+            if (hasConnectionStringOverride)
+            {
+                services.GetRequiredService<ILoggerFactory>()
+                    .CreateLogger(typeof(ServiceCollectionExtensions).FullName!)
+                    .LogInformation("The database connection string is taken from the configuration key {ConfigurationKey} instead of database.xml", ConnectionStringOverrideKey);
+            }
+
+            return providerFactory!(services);
+        });
 
         switch (efCoreConfiguration.LockingBehavior)
         {
@@ -139,7 +184,7 @@ public static class ServiceCollectionExtensions
         serviceCollection.AddPooledDbContextFactory<JellyfinDbContext>((serviceProvider, opt) =>
         {
             var provider = serviceProvider.GetRequiredService<IJellyfinDatabaseProvider>();
-            provider.Initialise(opt, efCoreConfiguration);
+            provider.Initialise(opt, providerConfiguration);
             var lockingBehavior = serviceProvider.GetRequiredService<IEntityFrameworkCoreLockingBehavior>();
             lockingBehavior.Initialise(opt);
         });

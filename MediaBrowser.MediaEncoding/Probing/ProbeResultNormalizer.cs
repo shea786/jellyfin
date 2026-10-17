@@ -1110,6 +1110,12 @@ namespace MediaBrowser.MediaEncoding.Probing
                     && width > 0
                     && height > 0))
             {
+                // Live TV and other early probes can report neither a usable display aspect ratio nor the frame size
+                if (info.Width is not > 0 || info.Height is not > 0)
+                {
+                    return original;
+                }
+
                 width = info.Width.Value;
                 height = info.Height.Value;
             }
@@ -1655,7 +1661,7 @@ namespace MediaBrowser.MediaEncoding.Probing
 
             // Credit to MCEBuddy: https://mcebuddy2x.codeplex.com/
             // DateTime is reported along with timezone info (typically Z i.e. UTC hence assume None)
-            if (tags.TryGetValue("WM/MediaOriginalBroadcastDateTime", out var premiereDateString) && DateTime.TryParse(year, CultureInfo.InvariantCulture, DateTimeStyles.AdjustToUniversal, out var parsedDate))
+            if (tags.TryGetValue("WM/MediaOriginalBroadcastDateTime", out var premiereDateString) && DateTime.TryParse(premiereDateString, CultureInfo.InvariantCulture, DateTimeStyles.AdjustToUniversal, out var parsedDate))
             {
                 video.PremiereDate = parsedDate;
             }

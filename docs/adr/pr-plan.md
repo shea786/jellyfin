@@ -1,0 +1,1090 @@
+# Step plan (one upstream PR)
+
+This file stays in the fork and never goes upstream. The user writes all PR titles and bodies, because Jellyfin forbids LLM-written direct communication. Nothing here is PR text.
+
+## Rules
+
+- **Branching.**
+  - Within a group, every branch is cut from the one before it.
+  - Group 0 starts from `upstream/master`.
+  - Groups C and D both start from the tip of C0 and do not depend on each other, so their order can swap (ADR-0011).
+  - Rows marked *independent* start from `upstream/master` and can be carved out at any time.
+- **Every step:**
+  - builds warning-free (`TreatWarningsAsErrors`);
+  - passes the existing matrix;
+  - leaves SQLite fully working.
+  - From step 27a on, every commit, not only the tip, is built in Debug: 0 errors, and a warning set no larger than the base's. This also applies to SQL Server work and to the final linear replay (B31).
+- **Portability steps (group 0 and group C0):**
+  - contain only provider-neutral changes, plus SQLite tests that pin the behaviour and follow the rules in ADR-0002;
+  - add no references to any server engine.
+- **SQLite migrations.** The **SQLite migration** column marks the only step that carries one. Every other step is SQLite-neutral: no migration file, and `HasPendingModelChanges` stays false.
+
+**Local TDD.**
+
+- The fork-only integration branch `feature/multi-db` carries the whole stack, the `docs/adr/` commits and work in progress.
+- The test infrastructure and the providers are built there first, so a portability test can go red and then green on every engine before its step branch is cut.
+- On `feature/multi-db`, portability tests derive from `JellyfinDbTestFixture`. On the group 0 step branches they derive from `SqliteDbTestFixture`, a one-token difference. Step 10 performs the rename.
+
+**Numbering changed on 2026-10-12** (old number → new):
+
+| Old | New |
+|---|---|
+| 01 Guid `MIN` rewrite | dropped (ADR-0007); now 01, which only pins the behaviour |
+| 02 | 02 |
+| 03 | 05 |
+| 04 NULL ordering | moved into the Postgres provider (14), per ADR-0006 R1 |
+| 05 `MaxLength` truncation | dropped (ADR-0009); NUL stripping is now 06 |
+| 06 | 08 |
+| 07 | 09 |
+| 08 | 07 |
+| 09 | X1 |
+| 10-13 | unchanged |
+| 14-17 | 15-18 |
+
+## Group 0: Portability
+
+These steps reconcile with the parity task list P1-P7. P8 is a Postgres item and moved to group B.
+
+| # | Branch | Scope | Key files | Tests added | Depends on | SQLite migration |
+|---|---|---|---|---|---|---|
+| 01 | `multidb/01-pin-ordering-and-grouping` | P1. Tests only: pin the Guid representative selection, string code-point order and NULL order (ADR-0006 (a), ADR-0007 (a)). No production change. | `tests/Jellyfin.Server.Implementations.Tests/Item/*` | ADR-0007 a1-a4, ADR-0006 a1-a4 | upstream/master | no |
+| 02 | `multidb/02-shared-utc-converter` | P2. Shared `UtcDateTimeConverter` with no truncation (ADR-0004 R1); remove `SetDefaultDateTimeKind` from SQLite | `Providers.Sqlite/ValueConverters/DateTimeKindValueConverter.cs`, `Providers.Sqlite/ModelBuilderExtensions.cs`, `SqliteDatabaseProvider.cs:142-145`, `JellyfinDbContext.cs:336-340` | ADR-0004 a1 (R2), a2; `HasPendingModelChanges` false | 01 | no |
+| 02b | `multidb/02b-utc-sentinels` | Store `DateTime.MinValue`/`MaxValue` as the same instant with UTC kind whatever their kind, through an internal helper on `UtcDateTimeConverter`; other values unchanged (ADR-0004). Found at the step 24 gate; built on `feature/multi-db` and replayed right after step 02. | `Jellyfin.Database.Implementations/ValueConverters/UtcDateTimeConverter.cs` | Converter unit tests and Unspecified/Local sentinel round trips, checked under five time zones on SQLite and PostgreSQL | 02 | no |
+| 03 | `multidb/03-date-sort-key-and-tolerant-compare` | P3. Year-only `PremiereDate` sort key; tolerant timestamp comparison for images | `Item/OrderMapper.cs:69`, `BaseDynamicImageProvider.cs:299`, `DateTimeExtensions.EqualsToMicrosecond` | ADR-0004 a3, a4, a5 (`HasChangedByDate`) | 02 | no |
+| 04 | `multidb/04-comic-date-kind` | P4. Comic calendar dates use `DateTimeKind.Utc` | `ComicInfoReader.cs:214`, `ComicBookInfoProvider.cs:238` | Parsers return `Kind == Utc` with the calendar date kept | 03 | no |
+| 05 | `multidb/05-case-insensitive-matching` | P5. `LikePatterns`, option D, the `NameContains`→`CleanName` fix, ban on the two-argument `Like` (ADR-0005) | `Jellyfin.Database.Implementations/LikePatterns.cs`, `Activity/ActivityManager.cs:80-108`, `Item/BaseItemRepository.TranslateQuery.cs:268,273,489,496`, `Library/Search/SqlSearchProvider.cs:125-134`, `Item/PeopleRepository.cs:482`, `BannedSymbols.txt` | ADR-0005 a1-a7; benchmark R1 | 04 | no |
+| 06 | `multidb/06-strip-nul` | P6. `SanitizeStrings()` in `SaveChanges`; strip NUL from query input (ADR-0009) | `JellyfinDbContext.cs:265,291`, `LikePatterns`, `StringExtensions.GetCleanValue` | ADR-0009 a1-a4 | 05 | no |
+| 07 | `multidb/07-write-conflict-retry` | P7. `IsRetryableWriteConflict` (default `false`), SQLite classifier, `WriteConflictRetry` (ADR-0008) | `IJellyfinDatabaseProvider.cs`, `SqliteDatabaseProvider.cs`, `Item/ItemPersistenceService.cs:334-388`, `ReconcileUserDataAsync` | ADR-0008 a1-a3 | 06 | no |
+| 08 | `multidb/08-restore-history-and-identity` | Restore keeps the archive's code-routine rows and the target provider's EF rows. Pre-flight runs before the purge. Each table is saved inside an identity scope. Adds `BeginExplicitIdentityInsertAsync` and `ResetIdentitySequencesAsync` (no-op defaults). See ADR-0003 S2. | `FullSystemBackup/BackupService.cs:160-250`, `IJellyfinDatabaseProvider.cs` | SQLite restore round trip; history contents; a failed pre-flight leaves the database untouched; an insert after restore gets an ID above the maximum | 07 | no |
+| 09 | `multidb/09-provider-neutral-routines` | Replace `sqlite_sequence` and `json_*` SQL in the code routines (ADR-0001) | `Routines/20250420070000_MigrateActivityLogDb.cs:87`, `Routines/20260911120000_StripEmbeddedLinkedChildren.cs:31` | Routine tests in `tests/Jellyfin.Server.Tests/Migrations/` | 08 | no |
+| X1 | `fix/migration-setup-premark` (exists; outside the stack) | Fix `!appliedMigrations.Any(f => f != id)` so that it checks membership | `Jellyfin.Server/Migrations/JellyfinMigrationService.cs:121` | `JellyfinMigrationServiceTests`: setup with non-empty history pre-marks only the missing routines | upstream/master (*independent*) | no |
+
+## Group A: Test harness (SQLite backend only)
+
+| # | Branch | Scope | Key files | Tests added | Depends on | SQLite migration |
+|---|---|---|---|---|---|---|
+| 10 | `multidb/10-db-test-infrastructure` | `tests/Jellyfin.Database.Testing` with the **generic** backend contract (ADR-0002 H1, H3), the SQLite backend, ambient selection and the `KnownGap` ledger. The rename to `JellyfinDbTestFixture` is its own commit (A2). | New project, `Jellyfin.sln`, `Directory.Packages.props`, 33 one-line base-class changes | Infrastructure self-tests; migration test (a) for SQLite | 09 | no |
+| 11 | `multidb/11-enrol-handrolled-db-tests` | Move the ~11 hand-rolled `SqliteConnection` classes onto the fixture; ban direct SQLite use in tests | `BackupServiceTests.cs`, `Users/*`, `Jellyfin.Server.Tests/Migrations/*`, `tests/BannedSymbols.Tests.txt` | The existing tests, now enrolled | 10 | no |
+
+## Group B: PostgreSQL (Supported)
+
+| # | Branch | Scope | Key files | Tests added | Depends on | SQLite migration |
+|---|---|---|---|---|---|---|
+| 12 | `multidb/12-connection-string-override` | `database:ConnectionString` override, applied after the write-back and never persisted (ADR-0001) | `Extensions/ServiceCollectionExtensions.cs:79-104` | The override applies, is not saved, and works for plugin providers | 11 | no |
+| 13 | `multidb/13-postgres-provider` | The provider class and its members (ADR-0003, including A1 Throw, `setval` reset and the purge), the Postgres test backend (template clone) and `ProviderFact`. **Not registered yet.** | New `Jellyfin.Database.Providers.Postgres`, `Directory.Packages.props` (Npgsql EF 10.0.3, `Testcontainers.PostgreSql` 4.16.0) | Member tests; the suite under `Postgres`, with gaps recorded | 12 | no |
+| 14 | `multidb/14-postgres-conventions` | P8. `"C"` collation and `text` (ADR-0006, ADR-0009), the `NULLS FIRST`/`LAST` generator and index convention (ADR-0006 R2), `Timezone=UTC` (ADR-0004), and the shared `IdentifierLengthConvention` (ADR-0001 M4) | Provider `Conventions/`, `Jellyfin.Database.Implementations/Conventions/IdentifierLengthConvention.cs` | The `[ProviderFact]` checks in ADRs 0004, 0006 and 0009; model conformance (identifiers) | 13 | no |
+| 15 | `multidb/15-postgres-migrations-and-registration` | Baseline `20200101000000_InitialCreate`, including `lower("Name")` and `jf_uuid_smaller`/`min(uuid)` (ADR-0007 R1/R2), `PostgresMigrationBaseline`; register the provider | Provider `Migrations/`, `ServiceCollectionExtensions.cs:24-27` | Migration tests (a)-(c), the failing-migration test (A1), the ADR-0007 aggregate tests, first run | 14 | no |
+| 16 | `multidb/16-tests-on-migrated-schema` | The default `TestSchemaSource` becomes `Migrations` | `tests/Jellyfin.Database.Testing/*` | The existing tests | 15 | no |
+| 17 | `multidb/17-ci-db-matrix` | The `run-tests-db` matrix with only the Postgres entry, and the generic sentinel (ADR-0010 CI1-CI2); a nightly run on the newest PostgreSQL; the test container's storage layout for PostgreSQL 18 images | `.github/workflows/ci-tests.yml`, `.github/workflows/ci-tests-db.yml` (reusable), `.github/workflows/ci-tests-db-nightly.yml`, `tests/postgres.runsettings`, `PostgresTestBackend.cs`, `BackendLiveness.cs` | `ProviderBackend_IsLive` (supersedes the earlier name `DatabaseBackend_IsLive`), checked against `JELLYFIN_TEST_EXPECTED_PROVIDER`; a TRX check for the required tests | 16 | no |
+| 18 | `multidb/18-integration-tests-on-postgres` | `JellyfinApplicationFactory` writes the selected provider's `database.xml` | `tests/Jellyfin.Server.Integration.Tests/JellyfinApplicationFactory.cs` | The integration suite on Postgres | 17 | no |
+
+## Group C0: Shared prerequisites for further engines (provider-neutral)
+
+| # | Branch | Scope | Key files | Tests added | Depends on | SQLite migration |
+|---|---|---|---|---|---|---|
+| 19 | `multidb/19-indexed-string-bounds` | Key-class `MaxLength`, `EnforceKeyLengths()`, ingest truncation of `Role`/`Value`, and the text-class annotation (ADR-0009 L1-L2). Snapshots are refreshed with no migration file (verified: zero SQLite operations). | Entities and `ModelConfiguration/*` for the 10 key-class columns, `JellyfinDbContext.cs`, `Item/PeopleRepository.cs`, `Item/ItemPersistenceService.cs`, both snapshots | ADR-0009 L5; model conformance (key budgets per engine); `HasPendingModelChanges` false on SQLite and PG | 18 | no (verified) |
+| 20 | `multidb/20-normalised-match-columns` | Option E: `BaseItems.CleanOriginalTitle`, `Peoples.NameLower`, backfill routine; queries switch to these columns (ADR-0005 E1-E4) | Entities, `BaseItemMapper`, `SqlSearchProvider.cs`, `TranslateQuery.cs:268,273`, `PeopleRepository.cs`, new SQLite and PG migrations with the same ID, a new code routine | Tests 2 and 7 flipped; backfill routine test; E4 behaviours | 19 | **yes**: 2 × AddColumn, index swap, batched backfill |
+| 20b | `multidb/20b-sort-name-ascii-fold` | Close the SortName gap without changing stored values (ADR-0005 R13): move the `NameStartsWith` filter from `ToLower().StartsWith` to `JellyfinDbFunctions.LikeIgnoreAsciiCase` with an escaped prefix pattern; keep the range filters on `ToLower()` and record the non-ASCII-term gap on engines whose `LOWER()` folds Unicode. No schema change, no routine, no public API, and no change in results on SQLite or PostgreSQL (ADR-0005 R14). | `BaseItemRepository.QueryBuilding.cs:228-246`, `LikePatterns.cs` | Parity tests for `NameStartsWith`, `NameStartsWithOrGreater` and `NameLessThan` with ASCII terms; known-gap ledger entry for a non-ASCII range term; `LikeIgnoreAsciiCaseTranslationTests` cases (É/é, Kelvin sign, dotted capital I, ß, ASCII mixed case) that every later provider must pass | 20 | no |
+| 21 | `multidb/21-non-transactional-migration-guard` | `SupportsTransactionalMigrations` (default `true`) and the `migration-in-progress.json` marker (ADR-0003 S1) | `IJellyfinDatabaseProvider.cs`, `Jellyfin.Server/Migrations/JellyfinMigrationService.cs:546` | Marker lifecycle and startup refusal, using a test provider that returns `false` | 20 | no |
+| 22 | `multidb/22-harness-leased-pool` | The generic leased-pool strategy: purge plus seed data, and `fresh: true` (ADR-0002 H1-H2) | `tests/Jellyfin.Database.Testing/*` | Pool self-tests on SQLite file databases | 21 | no |
+| 22b | `multidb/22b-migration-workflow` | Contributor workflow for schema changes (ADR-0001 W1-W3). (a) A design-time `IMigrationsIdGenerator` on the PostgreSQL provider that reuses the id of the SQLite migration with the same name, found by file name in the SQLite provider's `Migrations/` (no assembly reference, ADR-0011), implementing the public interface (not the internal `MigrationsIdGenerator`: EF1001), registered with `[assembly: DesignTimeServicesReference]` so a different startup project still finds it. (b) One offline command that generates the SQLite migration first and then every other provider's. (c) One test theory over a provider table for pending model changes and id pairing, replacing the PostgreSQL-only class; every failure message names the command. (d) `src/Jellyfin.Database/readme.md` replaced by an "Adding a database change" page (the escape-hatch order of W4; review every generated migration; never hand-port SQL blindly). About 400 lines. | PostgreSQL provider `Migrations/`, the command, `PostgresMigrationBaselineTests.cs` (generalised), `src/Jellyfin.Database/readme.md` | The theory on SQLite and PostgreSQL; a generator test (same name reuses the SQLite id; a name with no SQLite migration gets a fresh id); the command run once in a throwaway checkout | 22 (cut from the pre-step-24 tip so it replays before group C) | no |
+| 22c | `multidb/22c-migration-contents-check` | Cross-engine check of migration contents (ADR-0001 W2). For every paired id, compare the operations of `Up` and `Down` by kind, table and column, ignoring annotations. A `Sql` operation present on one engine only needs an allowlist entry with a reason, ledger-style. A fix for legacy SQLite data may stay SQLite-only; a fix for a bug in current code may not. | The test project of 22b, an allowlist file | The check on every paired migration so far, with an allowlist entry for each existing one-sided `Sql`. **Done 2026-10-15:** branch tip `70082dda51`, merged as `d59093e95c`, then `5597fca7cc`; see B27 | 22b | no |
+| 22d | `multidb/22d-raw-sql-ban-and-kit` | The upstream half of the old step 27a (ADR-0001 W5): (a) banned APIs `IsSqlite`/`IsNpgsql`/`IsMySql`/`IsSqlServer`, and `ExecuteSqlRaw*`/`FromSql*`/`SqlQuery*` outside provider projects, each existing site suppressed with its reason; (b) the cross-engine conformance kit run on SQLite and PostgreSQL, replacing their per-provider purge test classes. Its rows: purge, fresh and identity; explicit identity insert and restore round trip; an induced write conflict through the classifier; a `ParentId` chain deeper than 15 and a folder delete; `MinValue`/`MaxValue` under a non-UTC `TZ`; LIKE `%`, `_` and non-ASCII; lists of 3,000 and 100,000 ids; a long composite key; model conformance. | `BannedSymbols.txt`, `tests/BannedSymbols.Tests.txt`, `tests/Jellyfin.Database.Testing/*` | The kit on SQLite and PostgreSQL. **Done 2026-10-15:** branch tip `580005950e`, merged as `2b3bcd0649`, see B28. As built, the ban is in `BannedSymbols.Database.txt`, applied by `Directory.Build.props` to production projects only (not the providers or `tests/`), and it also bans `GetDbConnection`, `ProviderName` and `ActiveProvider`. The MySQL purge test class stays until 27a | 22c | no |
+
+## Group C: MySQL/MariaDB (Experimental, fork-only until ADR-0011 R1 is met; one provider, two matrix entries)
+
+| # | Branch | Scope | Key files | Tests added | Depends on | SQLite migration |
+|---|---|---|---|---|---|---|
+| 23 | `multidb/23-efcore-10.0.12` | Bump every EF Core package and `HealthChecks.EntityFrameworkCore` to 10.0.12. Npgsql 10.0.3 still fits. | `Directory.Packages.props:36-45` | The existing suites | upstream/master (*independent*; carve early) | no |
+| 24 | `multidb/24-mysql-provider` | `Jellyfin.Database.Providers.MySql` (Microting 10.0.12) and its members. Conventions: `utf8mb4_0900_bin` on both servers (ADR-0006 C4, superseding C2), `binary(16)` Guid (ADR-0007 G2), `datetime(6)` with the `MaxValue` clamp (ADR-0004 T3), `longtext` with prefix lengths (ADR-0009 L3), all filters removed (ADR-0001 M3), identifier limit 64, interceptor for strict mode and READ COMMITTED (ADR-0008 R3), retry codes, purge, `SupportsTransactionalMigrations = false`. Backends: `MySql`, `MariaDb` (pool). **Not registered.** Entry criteria from step 20b (ADR-0005 R13): `LikeIgnoreAsciiCase` translated with an ASCII-only fold, so that `LikeIgnoreAsciiCaseBehaviourTests` and `BaseItemRepositorySortNameFilterTests` pass on this provider's pooled backends; a known-gap ledger entry, keyed to this provider, for `NameStartsWithOrGreater`/`NameLessThan` with a non-ASCII term. | New project, `Directory.Packages.props` (`Microting.EntityFrameworkCore.MySql`, `Testcontainers.MySql`/`MariaDb` 4.16.0) | Member and classifier tests; the suite on both servers, with gaps recorded; model conformance | 20b, 22, 23 (step 23 dropped from the upstream series, see S9) | no |
+| 24b | `multidb/24-dateplayed-fix` | Rewrite the `DatePlayed` sort without a derived table that references the outer item, which MariaDB cannot resolve. It changes a hot query on every engine, so it is its own step. It merges only if the SQLite and PostgreSQL plans and the benchmark do not regress; otherwise the MariaDB known gap stays. As built: no shared shape passed, so the shared query is unchanged and the MySQL provider rewrites the aggregate for MariaDB only (ADR-0011 F7). | `UnionAggregateInterceptor.cs` and its registration in the MySQL provider (planned: `Item/OrderMapper.cs`) | The existing null-order and DatePlayed tests on all four engines; own date, alternate version, both, neither, other user | 24 | no |
+| 25 | `multidb/25-mysql-migrations-and-registration` | Baseline `20200101000000_InitialCreate` covering through step 20's migration; register `Jellyfin-MySQL` with the Experimental warning. Workflow rows (ADR-0001 W3): a design-time factory with a fixed server version, the id generator of 22b, MySQL rows in 22b's theory, command and 22c's check, and a pending-changes check with the MariaDB flavour. | Provider `Migrations/`, `ServiceCollectionExtensions.cs:24-27` | Migration tests (a)-(c) on both servers; safety-net test (S1); explicit `SHOW INDEX` prefixes | 24, 22b (the workflow rows only) | no |
+| 26 | `multidb/26-ci-mysql-mariadb` | A per-project sentinel check in the database job; `MySql` and `MariaDb` matrix entries, not required, run on every pull request, nightly and on demand, plus advisory newest-LTS entries (MySQL 9.7.2, MariaDB 12.3.3); the how-to per engine (configuration plus docker-compose) for MySQL/MariaDB and PostgreSQL from one template. **Done 2026-10-15:** tip `adf55de42f`, see B30 | `.github/workflows/ci-tests-db.yml`, `.github/workflows/ci-tests-db-mysql.yml`, `docs/database/*` | The sentinel of every database test project in its own results, on every entry | 25 | no |
+
+## Group D: SQL Server (Experimental, fork-only unless maintainers ask; ADR-0011 R2)
+
+| # | Branch | Scope | Key files | Tests added | Depends on | SQLite migration |
+|---|---|---|---|---|---|---|
+| 27a | `multidb/27a-conformance-kit` | The fork half of the old step 27a (ADR-0001 W5), before any SQL Server work (ADR-0001 E2-E3): (a) MySQL and MariaDB rows in the conformance kit of 22d, plus a LIKE `[` row on every engine; it replaces the MySQL purge test class. The `ParentId` row is where the step 24 pre-clear (M5) is proved on MySQL and MariaDB. (b) A test-side `EngineTraits` table replacing the engine switches in `PoolChecks`, `ModelRows`, `BackupServiceTests` and `JellyfinApplicationFactory`. (c) Escape `[` in the shared `LikePatterns` (motivated by SQL Server only, so it stays out of the upstream series). | `tests/Jellyfin.Database.Testing/*`, `LikePatterns.cs` | The kit on SQLite, PostgreSQL, MySQL and MariaDB. **Done 2026-10-16 (B31, B32):** the isolation fix (`399af59770`), binary collation (`a0bf39394e`), the kit on MySQL and MariaDB with `EngineTraits`, the flavour sentinel, the `[` escape and the purge contract (`a6cd869ce7`), a deterministic FolderDelete row (`2f1f16c85f`), and the dedicated ban rule JF0002 (`a142db1590`). Its follow-ups are listed in B32, among them the MySQL purge test classes. Next: SQL Server (ADR-0001 E2-E3) | 22d, 26 | no |
+| 27 | `multidb/27-sqlserver-provider` | `Jellyfin.Database.Providers.SqlServer` and its members (identity-insert scope, purge with `DELETE` + `RESEED`, retry codes, RCSI warning). Conventions: `binary(16)` Guid converter, BIN2 collation, `nvarchar(4000)` for text-class columns, OR filter dropped, `NoAction` on the 2 cascade FKs (ADR-0001 M5). Pool backend. **Not registered.** Written only after the SQL Server spike (ADR-0001 E3: the hazard checklist and the whole suite against a conventions-only stub) and after an ADR settles the text-class composite indexes over 1700 bytes (`Path`, `SortName`, `PresentationUniqueKey`). **Spike done 2026-10-16 (B33):** the brief is in B33, and the index question is ADR-0012 (Accepted, B34). Entry criteria from step 20b (ADR-0005 R13): `LikeIgnoreAsciiCase` translated with an ASCII-only fold, so that `LikeIgnoreAsciiCaseBehaviourTests` and `BaseItemRepositorySortNameFilterTests` pass on this provider's pooled backends; a known-gap ledger entry, keyed to this provider, for `NameStartsWithOrGreater`/`NameLessThan` with a non-ASCII term. | New project, `Directory.Packages.props` (`Microsoft.EntityFrameworkCore.SqlServer` at the EF version, `Testcontainers.MsSql` 4.16.0) | Member tests; the suite with ADR-0006 G1/G2 and ADR-0009 G2 recorded; folder delete (M5); unique-NULL filter (M6) | 22, 27a | no |
+| 28 | `multidb/28-sqlserver-migrations-and-registration` | Baseline and registration of `Jellyfin-SqlServer` with the Experimental warning | Provider `Migrations/`, `ServiceCollectionExtensions.cs:24-27` | Migration tests (a)-(c); failing-migration test | 27 | no |
+| 29 | `multidb/29-ci-sqlserver` | Add the `SqlServer` matrix entry, not required (ADR-0010 CI3) | `.github/workflows/ci-tests.yml` | Sentinel | 28 | no |
+
+## CI per engine
+
+There is no separate CI group, because each engine's CI arrives with it:
+
+- **step 17** creates the matrix job (Postgres, required).
+- **steps 26 and 29** each add an entry, not required while the engine is Experimental.
+- **Promotion** to Supported (ADR-0011) flips the required flag in repository settings.
+- **The nightly matrix** (newest LTS or minor of each engine) is added with step 17 and extended in steps 26 and 29.
+
+## Amendments (step 01 on Postgres, 2026-10-12)
+
+Source: a scratch run of step 01's tests on Postgres over the harness. SQLite passed 32 of 32. On Postgres, 25 failed and all of them fell within existing gaps: `GuidAggregates` (42883) for 15 rows, `StringCollation` for 7 rows. `PeopleRepositoryDuplicateNameTests` passes.
+
+- **B1. The harness stack carries the Group 0 tests.**
+  - The harness branch is rebased onto the Group 0 tip as each Group 0 step is merged, starting with step 01.
+  - On each rebase, the rename commit (A2) also switches the new test classes to `JellyfinDbTestFixture`.
+  - The gap-ledger commit (step 13) wraps their failing spans. For step 01 that is 10 `KnownGap.On` sites, about +52/-26 over 6 files.
+  - The `BaseItemRepositoryGroupingTests` conflict is resolved once: step 01's test bodies, inside the harness wrapper.
+- **B2. `GuidAggregates` masks the ordering assertions on Postgres.**
+  - Every `GetItemList` query that groups by presentation key fails on the missing `min(uuid)` before any ordering assertion runs. So on Postgres the 16 `NullOrder`, `StringOrder` and `NameRange` rows from step 01 test nothing about ordering until step 15 ships the aggregate.
+  - **step 14** cannot cite those rows as evidence for the `"C"` collation or the `NULLS FIRST`/`LAST` generator. Its ADR-0006 `[ProviderFact]` checks must exercise ordering through a query path that does not group by presentation key. The step 14 author confirms that path exists before writing the tests.
+  - **step 15** is where those rows first run their assertions on Postgres. step 15 reports every row that leaves `GuidAggregates` by name: either it passes, or the gap it moved to. "`GuidAggregates` closed" is not "ordering verified". The step 15 explainer says so.
+
+- **B3. Harness rebase onto step 05 (`ccbb7d666e`, harness tip C6 `57760e8c33`).**
+  - **The default `LikeIgnoreAsciiCase` translation is proven on Postgres.** `lower(col) LIKE p ESCAPE '\'` runs and passes in `SqlSearchProviderCaseMatchingTests` (9 rows), `ActivityManagerFilterTests` (13 rows) and the People `Bob`/`bob` dedupe. Replacing the default with a plain `LIKE` fails 21 of them on Postgres, so the tests do discriminate.
+  - **`NameContains` and `SearchTerm` rows are masked by `GuidAggregates`** (42883 before any assertion). They join the B2 list: step 15 reports each of them by name, passing or moved to another gap.
+  - **New gap `UnicodeLower`** (Postgres, assertion failures): the test database uses `en_US.utf8` (`datcollate`, verified), so `lower('É')` folds to `é` and the ASCII-only pinning tests (`Émile`/`émile` dedupe) fail. Under `"C"` `lower()` folds ASCII only, as on SQLite. **Step 14 must close it**, and its gap removal is checked like any other: the wrapped rows pass, or the step explains why not.
+  - The SQLite-internals tests from step 05 (translation shape, equivalence grid, People case-sensitive `LIKE`) are marked SQLite-only in C5, the commit where the Postgres backend first exists. Accepted: before C5 there is no other provider to exclude.
+  - Postgres totals at the harness tip: 1183 passed, 100 skipped (64 `GuidAggregates`, 12 Windows-only, 11 SQLite-only, 10 collation, 1 NULL order, 1 `UnicodeLower`, 1 no migrations), 0 failed, identical over two runs.
+
+- **B4. Harness rebases are batched (2026-10-13).** The PostgreSQL track (steps 14-15) is built on the harness tip `57760e8c33` in parallel with Group 0. Rebasing the harness after every Group 0 step would move the base under that track each time, so the harness is rebased once Group 0 (through step 09) has landed, and the PostgreSQL track with it. That rebase adds the `NulInExactMatchParameter` gap from step 06 (ADR-0009 N3) and reports every Group 0 test on PostgreSQL, as B1-B3 require.
+
+- **B5. PostgreSQL track results (steps 14-15, tips `e11a40f4ea` and `5579b02ee2`) and the items they hand on.**
+  - The server runs on PostgreSQL 16.15 selected through `database.xml`: a fresh install migrates in one baseline, the wizard, authentication and the main API answer, a music library scan matches SQLite (including sort order and search), and a restart reuses the database. `GuidAggregates` (64 rows) and `PostgresMigrations` closed with every row passing; remaining PostgreSQL skips are Windows-only and SQLite-only tests.
+  - **Classifier.** When the stack is rebased onto step 07, the PostgreSQL provider implements `IsRetryableWriteConflict` (23505, 40001, 40P01) with the unit tests ADR-0008 lists. The integration test `LibraryStructureControllerTests.RenameLibrary_*` failed 2 of 3 runs on PostgreSQL with a 23505 on `PK_BaseItems` (`ValidateTopLibraryFolders` racing the scan). After that rebase it is run ten times; if it still fails it is a real bug to fix, not a gap.
+  - **Step 08** must cover a SQLite backup restored onto PostgreSQL end to end (history mapping, identity, NUL).
+  - **Step 18** adds provider selection to `JellyfinApplicationFactory` (it never writes `database.xml`; an experiment patch exists) and a per-provider variant of `StartOverTests.DeletedDatabase_*`, whose refusal text differs on PostgreSQL.
+  - **Step 16** (tests on the migrated schema) brings `IX_Peoples_NameLower` to model-source test databases.
+  - **Benchmark.** ADR-0005 R1(ii) (SQLite against PostgreSQL after the conventions) and NULLS FIRST index use on large tables are measured before step 14 is merged. The run follows ADR-0005 R1a (2026-10-13): it no longer waits for a quiet machine; equal container/core budgets, at least three interleaved pairs, load recorded, plans decide and timings are indicative. The MySQL/MariaDB and SQL Server benchmarks follow the same rule.
+  - The setup pre-marking bug the worker hit is X1, which the stack picks up on rebase.
+
+## Amendments (single upstream PR, 2026-10-12)
+
+The user changed the delivery strategy. This supersedes "small, stacked, independently mergeable PRs" wherever it appears in this file and in the ADRs.
+
+- **S1. One upstream PR.**
+  - The complete multi-database feature is built on the fork. When it is finished, it goes to jellyfin/jellyfin as one PR.
+  - Nothing goes upstream piecemeal.
+  - "PR NN" in the ADRs and explainers written before this date means step NN of this plan.
+- **S2. Steps stay the units of work.** Groups 0, A, B, C0, C and D keep their order and numbering. For each step:
+  - it gets its own branch, cut from the step before it;
+  - tests come first;
+  - it passes the gates: Code Reviewer, Debug and Release builds with no new warnings (ADR-0002 H7), and green tests;
+  - it gets an explainer on `feature/multi-db`;
+  - it is merged into `feature/multi-db` with `git merge --no-ff`.
+  - Merging is never a reason to rebase or amend a step branch.
+  - If a merged step later needs a review fix, its branch is fixed (it is unpushed) and the new tip is merged again. `feature/multi-db` history is never rewritten.
+- **S3. The commit series is the deliverable.**
+  - Reviewers will read the final PR commit by commit, and Jellyfin's LLM policy asks for large changes to be split into small, manageable commits.
+  - Every commit must build and pass its tests on its own. Each has a clear imperative subject and a body that explains why.
+  - A commit body may name the engine that motivates a change, for example PostgreSQL, but must not claim a SQLite fix that does not exist.
+- **S4. Building the final branch.**
+  - `multidb/upstream` is built by replaying the step branches' commits, in step order, onto the current `upstream/master`. It has no merge commits and none of the fork-only `docs/adr` commits.
+  - That linear series is what goes upstream, when the user says so.
+  - X1 (`fix/migration-setup-premark`) is an ordinary unit, merged like the rest, and its commit stays in the series. Maintainers may ask for unrelated fixes to be split out; the user decides at submission time.
+- **S5. Upstream sync.**
+  - Fetch `upstream` before starting every step, and at least between steps.
+  - If `upstream/master` has moved:
+    - rebase the step branch in progress (unpushed and unmerged, so this is safe);
+    - merge `upstream/master` into `feature/multi-db` so conflicts surface early.
+  - Merged step branches are rebased only when `multidb/upstream` is built (S4).
+  - Report to the coordinator any upstream change to `src/Jellyfin.Database`, to the migrations, or to files the steps touch.
+  - For every new upstream SQLite migration, generate the MySQL (and later SQL Server) migration with the step 22b command, then run the step 22c contents check. A one-sided `Sql` operation is either ported by hand or given an allowlist entry with its reason (ADR-0001 W6).
+- **S6. Explainers.**
+  - Write one per step, as now.
+  - At the end, write an overall explainer for the whole PR, as study material and not PR text. It covers:
+    - the architecture overview;
+    - the behaviour changes on SQLite;
+    - the test evidence;
+    - known limitations and the experimental tiers;
+    - a suggested reading order of the commits.
+- **S7. Unchanged.** No pushing to origin or upstream, and no PR, until the user says so. The user writes all PR text.
+- **S8. X1 is the exception and goes upstream now, as its own PR.** The user decided this on 2026-10-12.
+  - `fix/migration-setup-premark` is published on origin at `f8bf42be78`. Its commits are `2d9b57c52d`, the fix, and `f8bf42be78`, the CONTRIBUTORS.md entry.
+  - The branch is never rewritten. A change requested in upstream review goes on as a new commit, and the coordinator and the user handle that branch. Every new tip is merged into `feature/multi-db` again.
+  - When `multidb/upstream` is built (S4), drop both commits if the PR has merged upstream by then, and keep them if it hasn't.
+- **S9. Upstream watch list.** Check it at every upstream sync (S5), and again before `multidb/upstream` is built. A PR here that merges changes our work as noted. Recorded from the read-only scan at `61f9a9df23`.
+
+| Upstream | State at scan | What it does | Our response |
+|---|---|---|---|
+| #17899 | open | Roll back failed database restores; the archive is validated first | Step 08's second commit (validate, transaction, in-transaction purge) overlaps it, and the later step 08 commits build on that commit, so it cannot simply be dropped. If #17899 lands, that commit is replaced by #17899 when the series is replayed and the conflicts in the later commits are resolved then (decided at the step 08 gate, 2026-10-13) |
+| #17901 | open, depends on #17899 | `CompleteDatabaseRestoreAsync(JellyfinDbContext, CancellationToken)` on the provider | We use exactly this member (ADR-0003 U1) |
+| #17119 | open | ItemValues get-or-create retry under parallel saves | `WriteConflictRetry` follows its shape (ADR-0008 U1). Step 07's last commit wraps `UpdateOrInsertItems`; if #17119 merges first, drop that commit (dropping it gives exactly commit 3's tree) and fix commit 3 so #17119's new test builds: `ItemPersistenceServiceItemValueRaceTests.cs:171-175` constructs `ItemPersistenceService` with 3 arguments and needs the provider argument added (CS7036). |
+| #18091 | open | Foreign keys on TrickplayInfos/MediaSegments, new migration, `PRAGMA foreign_keys` | Regenerate the PG baseline and move the migration pin (ADR-0003 U3) |
+| #16301 | open | SQLite-only `CleanValue` function for non-ASCII search | Conflicts with option E (ADR-0005 U3) |
+| #18299 | open | Seeded random sort, `EF.Functions.Random` | Check in step 14 (ADR-0006 U1) |
+| #17115 | open | SQLite pessimistic-lock rework | Re-check the locking default (ADR-0008 U3) |
+| #17449 | open issue | `--restore-archive` crashes on a fresh instance | Covered by step 08 (ADR-0003 U1) |
+| X1 (ours) | merged into `feature/multi-db`; the upstream-shaped branch `fix/migration-setup-premark` (`f8bf42be78`) is its own upstream unit (S8) | Premark fix intended for upstream on its own | S8 |
+| X2 (ours) | the upstream-shaped branch `fix/probe-broadcast-date` (`4f64caba7a`, cut from `upstream/master` at `61f9a9df23`) is merged into `feature/multi-db`; whether it ships inside the single PR or separately is decided at submission time | Premiere date read from the broadcast date tag (`ProbeResultNormalizer.cs:1658`) | S10 |
+| X3 (ours) | the upstream-shaped branch `fix/latest-episodes-null-date` (`16c7d206be`, cut from `upstream/master`) is merged into `feature/multi-db`; whether it ships inside the single PR or separately is decided at submission time | `GetLatestTvShowItems` subtracts 24 hours from `DateTime.MinValue` when a series' newest episode has no `DateCreated` (`BaseItemRepository.Querying.cs:343`) | Same handling as X2 (S10); B16 |
+| X6 (ours) | on `feature/multi-db`, merged with X5 in `a5f1e5b2c9` (fork pair `cecac3f9b5`, `47b844674b`) with a green post-merge proof; the upstream-shaped X6 `b4642f0dbf` follows X5 `7ce3511a84` on `aec42b345e` (B23); whether it ships inside the single PR or separately is decided at submission time | `20250420070000_MigrateActivityLogDb.cs:87` resets `sqlite_sequence` for `'ActivityLog'`, but the EF table is `ActivityLogs` (`20200514181226_AddActivityLog.cs:17`), so the reset after `RemoveRange` does nothing and re-imported entries continue from the old highest id | One-word fix with its own failing-first test, like X3; can be offered upstream alongside X5 |
+| X7 (ours) | on `feature/multi-db`: fork `68ea0d1249`, merged by `0f118c6b7c` with a green post-merge proof (B22); plus the upstream-shaped `837cf78032` (`fix/hls-extinf-invariant-culture`) on `aec42b345e`; whether it ships inside the single PR or separately is decided at submission time | `SubtitleController.GetSubtitlePlaylist` appended `TimeSpan.TotalSeconds` with the current culture, so fr-FR gave `#EXTINF:4,5,` | Invariant formatting with a failing-first fr-FR test; can be offered upstream on its own |
+| X8 (ours) | on `feature/multi-db`: fork `96b3b718a9`, merged by `5d8b85e832` with a green post-merge proof (B22); plus the upstream-shaped `34dc00973a` (`fix/vtt-timestamp-map-header-only`) on `aec42b345e`; whether it ships inside the single PR or separately is decided at submission time | `SubtitleController.GetSubtitle` replaced every `WEBVTT`, splitting cue text and header text with the timestamp map | Map only after the whole first line, with whole-output tests; can be offered upstream on its own |
+| X10 (ours) | on `feature/multi-db`: fork `939887782c` (`multidb/x10-merge-candidate`) on `3d0ab14734`, fast-forwarded into `feature/multi-db` by the orchestrator (B29); plus the upstream-shaped `2084aa42b2` (`fix/backup-home-sections`) on `aec42b345e`; whether it ships inside the single PR or separately is decided at submission time | `HomeSection` had no `DbSet`, so a backup did not carry it and a restore did not give the home-screen sections back on any engine (22d finding F1) | A singular `DbSet`, and on upstream a restore that keeps archive keys and reads them before the purge; can be offered upstream on its own |
+| X12 (ours) | fork-only, `multidb/x12-pg-path-key` on `93c7ffec57`: a code commit and a docs commit; review and merge by the orchestrator (B36). PostgreSQL is in the upstream series, so at the replay it folds into steps 14 and 15 instead of shipping as a migration | On PostgreSQL an item whose `Path` a btree index entry cannot hold (2704 bytes) never saved, while SQLite saved it (ADR-0009 G1) | `IX_BaseItems_Path` becomes a hash index through a PostgreSQL convention; no shared model or query change (ADR-0009 L8) |
+| #18381 | open | Rewrites the `recentCutoff` line in `GetLatestTvShowItems` | Would reintroduce the X3 throw if it lands without X3; rebase X3 or ask for the null check there |
+| #18423 | open | Adds `BaseItemRepositoryLatestItemListTests.cs` | A reviewer may want X3's tests moved into it |
+| #17879, #17878 | #17879 MERGED upstream on 2026-10-13 (`619eb231b4`, upstream/master `e53a6d3e6a`), merged into the fork by the 2026-10-15 sync (B18); #17878 (dotnet-ef 10.0.13) open at the 2026-10-15 scan | #17879 moved the Microsoft pins to 10.0.12, Test.Sdk to 18.11.0 and System.Text.Json to 10.0.13, a superset of step 23 | Drop step 23 when `multidb/upstream` is built. The replay of the later steps must not touch those pins. Step 23 left the dotnet-ef tool at 10.0.11; step 22b (`d4d55bcada`) moved the fork's tool to 10.0.12, which the sync keeps (upstream's tool is still 10.0.11). |
+| EF Core pins (step 23) | `f84294103c` bumps EF, Sqlite, HealthChecks and four Microsoft.Extensions pins to 10.0.12 | Upstream's dependency bot has bumped these (#17879 merged 2026-10-13, EF at 10.0.12) | At each sync and before `multidb/upstream`: if upstream is already at or past 10.0.12, drop step 23; if it moved some pins only, re-cut it against the new pins. The MySQL provider needs EF >= 10.0.12. |
+| Our code routines and migrations | step 06 adds `20261012120000_RemoveNulFromItemKeys`; step 19 adds `20261013090000_NormalizeOverlongKeys`; step 20 adds the EF migration `20261013120000_AddNormalisedMatchColumns` (SQLite and PostgreSQL, same ID) and the routine `20261013130000_BackfillNormalisedMatchColumns`, which must run after that migration | Upstream's latest routine at `e53a6d3e6a` is `20260915120000_MigrateRatingLevels`; its latest SQLite migration is `20261002210711_MakeOwnerIdIndexesPartial` | Before `multidb/upstream` is built, every routine and EF migration the series adds must sort after upstream's latest; if upstream adds a later one, re-date ours, keeping the step 20 migration before its backfill routine. Check how each interleaves with EF migrations on SQLite and that it is pre-marked on a fresh PostgreSQL install. |
+
+  - Also re-run the scan's searches at each sync: `git grep -i -E "postgres|npgsql|mysql|mariadb"` on `upstream/master`, plus the commit log under `src/Jellyfin.Database`, `Jellyfin.Server.Implementations/Item`, `Jellyfin.Server/Migrations` and `FullSystemBackup` since the last sync.
+  - The scan of 2026-10-15 adds the rows in B23.
+- **S10. X2, `fix/probe-broadcast-date`, is an independent unit like X1.** The user ruled on 2026-10-12 that it is fixed as part of this work.
+  - The bug: `ProbeResultNormalizer.cs:1658` looked up `WM/MediaOriginalBroadcastDateTime` but parsed the year tag, so the broadcast date never became the premiere date. Details are in ADR-0004 U3.
+  - The branch is cut from `upstream/master`, not stacked on the steps, so it can be submitted on its own. It has one commit with the fix and its test.
+  - It goes through the usual gates and gets an explainer. It is then merged into `feature/multi-db` with `--no-ff`.
+  - It lives on `feature/multi-db`, merged there, and on its own upstream-shaped branch. Whether it ships inside the single PR or separately is decided at submission time, as for X1.
+- **S11. Decision ownership (user direction, 2026-10-12).** The orchestrator owns every technical decision, including rework-round limits; nothing technical goes to the user. When a step is stuck: step back, get an architect's view, decide, record it in an ADR, and continue. Policy that stays with the user and is not raised again: pushing to any remote; opening or posting anything upstream (Jellyfin's policy requires the user's own words); deleting branches. Backup branches are kept and listed once in the final report after the upstream series is built and verified. Progress goes to the coordinator at milestones only: a step merged, the harness merged, a provider working, the final series ready.
+- **S12. Definition of done (user, 2026-10-12).** "Build and make sure that Jellyfin can support multiple databases such as SQLite, MySQL, Postgres, MariaDB, and other databases, and have one branch with all of these changes in it."
+  - The deliverable is `feature/multi-db`: one branch on which Jellyfin runs on SQLite, PostgreSQL, MySQL, MariaDB and SQL Server (CockroachDB stays rejected, ADR-0011). Each provider is selectable through `database.xml`, migrates a fresh database, starts the server, and passes the cross-provider parity suite and the integration tests on its engine.
+  - ADR-0011's tiers (Experimental, fork-only) only decide what is offered upstream later. They do not reduce what is built here: MySQL, MariaDB and SQL Server are implemented, tested and green on `feature/multi-db`, like PostgreSQL.
+  - Also part of done: a how-to in the fork for running Jellyfin on each engine (configuration plus a docker-compose example per engine), and a CI matrix on the fork covering every engine.
+  - **Pace.** Work is parallelised wherever dependencies allow. Provider tracks (PostgreSQL conventions and baseline, then MySQL/MariaDB and SQL Server) are prepared in their own worktrees on top of the harness while Group 0 finishes, and are rebased onto the proper base when it lands. The aim is a working server on every engine early, then hardening.
+  - Milestones reported: Group 0 complete; harness merged; each engine reaching "server starts and the parity suite is green"; the final upstream series and the overall explainer.
+- **S13. Step 09 is dropped (ADR-0001 P1).** The SQLite-era routines with engine SQL never run outside SQLite: they are pre-marked on fresh installs and carried by restore. Group 0 is steps 01-08. The step numbering of later steps is unchanged; step 10 follows step 08.
+
+## Amendments (step 14/15 gate, 2026-10-13)
+
+- **B6. Step 14 delta PASS; step 15 PASS WITH NITS, one must-fix decided by building step 12 now.**
+  - Step 15's provider message tells users to set `database:ConnectionString` (`JELLYFIN_DATABASE__CONNECTIONSTRING`), which nothing reads yet. Rather than ship a message that points at nothing, or drop it and re-add it later, step 12 (connection-string override, ADR-0001 option 3b) is built now from the Group 0 tip. The override is applied to a copy of the database options, so no later save can persist it.
+  - Order on the fork: harness rebase (steps 10/13 with the PostgreSQL classifier and identity reseeding) and step 12 merge into `feature/multi-db`; steps 14/15 are then rebased onto that tip with the step 15 nits folded in: B2 log "backed up as" only when a real backup key exists, B3 a 73-column body line in `1c855cf282`, B4 `PostgresMigrationBaseline` and `PostgresUuidAggregate` internal.
+  - In the final linear series step 12 precedes steps 13-15, so the message is true at every commit that carries it.
+- **B7. The PostgreSQL benchmark adds one commit to step 14 (ADR-0003 R4, ADR-0005 R7).** During the 14/15 rebase, a commit that sets `jit = off` per physical connection goes right after the UTC session commit, with its tests. Step 14 merges only after a JIT-off re-run shows S1-S6 within 3x of SQLite, or after a recorded decision on whatever remains.
+- **B8. Step 11 input: test classes that still open SQLite themselves (harness tip `d22e50d315`).** Step 11 converts them to the provider fixture, or marks them SQLite-only with a reason if they test SQLite internals. Implementations.Tests: `Item/ItemCountServiceTests`, `Item/ItemPersistenceWriteConflictTests`, `Library/UserDataManagerTests`, `Security/AuthenticationManagerTests`, `Users/UserManagerNormalizedUsernameTests`, `Users/UserManagerProfileImageTests`, `Users/UserManagerUpdateUserTests`, `Data/LikeIgnoreAsciiCaseTranslationTests`, and the parts of `FullSystemBackup/BackupServiceTests` that build their own connection. Server.Tests migration routines: `ConsolidateLocalizedUserViewsTests`, `HarmonizeConflictingUserDataTests`, `MigrateLinkedChildrenStaleItemsTests`, `RemoveNulFromItemKeysTests`, `RepairAlternateVersionLinksTests`. Server.Tests has no PostgreSQL coverage until then. Already SQLite-internal by design: `SqliteDatabaseProviderPurgeTests`, `SqliteWriteConflictClassificationTests`.
+- **B9. Step 14 adds one provider interface member (ADR-0003 R5).** A default no-op member on `IJellyfinDatabaseProvider` (`Jellyfin.Database.Implementations`, on the ABI list, so it is permanent), called once per start after schema migrations. The PostgreSQL provider uses it to set `jit = off` for its own role in its own database. It replaces the R4 connection initializer and `No Reset On Close`; the test backend change made for the initializer (template built without pooling, `ClearPool` removed) is dropped with it.
+- **B10. PostgreSQL milestone met (2026-10-13, `c265d3834f`).** With step 15 merged, Jellyfin starts on PostgreSQL 16.15 selected through `database.xml` or `database:ConnectionString`. A fresh database is migrated by the baseline, and JIT is turned off for the role once. The wizard, authentication, a library scan, search and sort work, and the data persists across a restart. A malformed connection string fails with guidance and without echoing it. The parity suite is green: 1581 passed, 49 skipped, 0 failed, identical over two runs in container mode, so the `pg_dump` restore tests ran. The skips are 33 SQLite-only, 12 Windows-only and 4 NulInExactMatchParameter. The 4 NUL rows are the only remaining PostgreSQL gap, to be fixed at the API boundary outside this series. The integration suite on PostgreSQL arrives with step 18.
+- **B11. Step 16 amends B5: model-source test databases do not get `IX_Peoples_NameLower` (2026-10-13).**
+  - `TestSchemaSource.Model` means exactly the schema EF derives from the model. The default is now `Migrations`, so every test that depends on the index, or on the PostgreSQL `min(uuid)` aggregate, runs on a migrated schema. A model-source database carrying part of the migrated schema would describe neither schema, so the PostgreSQL model template no longer installs the aggregate either.
+  - `IX_Peoples_NameLower` is `lower("Name")` with no NULL order. `Peoples.Name` is NOT NULL, so `lower("Name")` is never NULL and the NULL order of the index cannot affect any plan. The step 14 rule (nullable index columns sort NULL first) does not apply to it. The test that checks the rule excludes this index by name for that reason, and the baseline is unchanged.
+- **B12. PostgreSQL integration suite green (2026-10-13, `6dcae752eb`).** This closes the open item in B10. With step 18 merged, the integration test server runs on the selected provider. With PostgreSQL selected, the factory creates an empty database and writes `database.xml`, and the server's own migrations build the schema. In container mode, twice: Integration 139 passed, 6 skipped, 0 failed. The skips are 3 upstream `UserLibraryControllerTests` and 3 SQLite-only. Implementations 1584 passed, 50 skipped; Server 92 passed. The four StartOver PostgreSQL cases (database dropped or empty, wizard reset or completed) and the factory provider proof passed both times. Remaining in the PostgreSQL track: step 17 (CI) and step 11 (hand-rolled tests onto the fixture).
+- **B13. PostgreSQL track complete (2026-10-13, `fccca748c7`).** Steps 11 to 18 and step 23 are merged on `feature/multi-db`, on top of the test harness. Every test class runs on the selected provider, or is SQLite-only with a stated reason, and test projects can no longer open SQLite directly. In container mode with `postgres.runsettings` and the expected provider set, run twice: Implementations 1608 passed, 51 skipped; Server 80 passed, 12 skipped; Integration 139 passed, 6 skipped; 0 failed. The sentinel, the `pg_dump` restore test and the integration provider proof all pass, on PostgreSQL 16.15. On SQLite: 1577/85, 85/7, 132/11. The CI database job (PostgreSQL 16.15 on pull requests, 18.6 nightly) passes in local simulation but has never run on GitHub, which needs a push to the fork. The only remaining PostgreSQL gap is `NulInExactMatchParameter`. Next: C0 (steps 19 to 22), then MySQL/MariaDB and SQL Server.
+- **B14. Step 24 input from the step 21 gate (2026-10-13).** `BackupService` (around `:214`) calls `MigrateAsync` while restoring an archive, outside `JellyfinMigrationService`. On a provider whose migrations are not transactional, a failure there leaves a partial schema and no `migration-in-progress.json` marker. Step 24 must send that call through the marker logic, or refuse an archive restore that needs migrations on such a provider. The step 24 provider also needs a real pre-migration backup. Until it has one, `MigrationBackupFast` returns the empty key, and the operator's own `mysqldump`/`mariadb-dump` is the only recovery path. The refusal message already says so.
+- **B15. Entry criteria for the pooled backends, from the step 22 gate (2026-10-13).** Steps 24 and 27 must do the following before their backends lease from the pool:
+  - **Seed through EF.** Insert seed data through EF's own migration pipeline instead of the hand-rolled insert in `DatabaseReset`: `IMigrationsModelDiffer.GetDifferences(null, designTimeModel.GetRelationalModel())`, filtered to `InsertDataOperation`, then `IMigrationsSqlGenerator` and `IMigrationCommandExecutor`. This handles identity seeds (SQL Server `IDENTITY_INSERT`) and owned or shared-type entities.
+  - **Restart identity per engine.**
+    - SQL Server: `DBCC CHECKIDENT(RESEED, 0)` gives a next id of 0 on a table that never had a row, so only reseed tables whose `last_value` is not NULL.
+    - MySQL/MariaDB: `TRUNCATE` with `FOREIGN_KEY_CHECKS=0`, or `DELETE` plus `AUTO_INCREMENT = 1`.
+  - **Run the conformance checks on every pooled backend.** Run "reset contents match a fresh database" and "identity restarts at 1" against `TestDatabaseEnvironment.Backend` whenever it is pooled, not only in the SQLite file self-tests.
+  - **Schema fingerprint.** Each engine supplies its own fingerprint (step 22 ships the SQLite one), so a lease returned with a changed schema is dropped.
+  - **Prove the `fresh` flag reaches the backend.** The step 22 re-gate found that `DatabaseTestFixture` passing `false` instead of the caller's `fresh` still passed every test, because the SQLite and PostgreSQL backends ignore it. With the first pooled backend behind the fixture, add a test at the fixture seam showing that a `fresh` fixture gets a database that is not from the pool and is dropped afterwards.
+  - **Pool teardown nits from the re-gate.** Fold in when the pool gets its first real user: the `DatabaseReset` comment names `GetSchema()`; `Lease` must not hand out an idle database a concurrent `Dispose` has already swept; the `AggregateException` from a failed drop after disposal goes through the same path as other post-disposal drops; a `fresh` lease does not compute a fingerprint it never uses.
+
+## Amendments (third-engine evaluation, 2026-10-14)
+
+- **B16. Plan changes from the architecture evaluation (ADR-0001 E1-E5).**
+  - **Step 24** finishes its fix round as planned.
+  - **Step 24b** is the `DatePlayed` rewrite, split out of step 24 because it changes a hot query on every engine. The evaluation flags several correlated subqueries per row as a SQLite performance risk, so it merges only with SQLite and PostgreSQL plans and a benchmark that show no regression. Otherwise the MariaDB known gap stays and is documented for users.
+  - **Step 02b** (UTC sentinels) and **X3** (`fix/latest-episodes-null-date`, from `upstream/master`, a null `DateCreated` crashing the latest-episodes query) are new independent units, found while gating step 24.
+  - **Steps 25 and 26** stay as planned. Step 26 also writes the PostgreSQL how-to, which does not exist yet, from the same template as the MySQL/MariaDB one.
+  - **Step 27a** (conformance kit, `EngineTraits`, banned APIs, `[` escape) comes before any SQL Server work. Step 27's brief follows the SQL Server spike and an ADR on text-class composite indexes over 1700 bytes. The evaluation names that index question as the largest SQL Server risk.
+  - **Corrections for the SQL Server plan.**
+    - `OwnerId` is already `NoAction` (`BaseItemConfiguration.cs:40`). Error 1785 concerns the `ParentId` self-cascade and the two `AncestorIds` cascades, which M5 settles.
+    - EF adds the unique-NULL filter itself (M6).
+    - The 2100-parameter limit only applies if SQL Server copies MySQL's one-parameter-per-value lists. It keeps the `EF.Parameter` path (OPENJSON).
+    - New items: escape `[` in LIKE patterns (step 27a), and `LOWER` folding Unicode under BIN2 collations.
+  - **No rework of merged SQLite and PostgreSQL steps** (ADR-0001 E4).
+
+## Amendments (contributor-workflow evaluation, 2026-10-14)
+
+- **B17. How a later contributor's database change reaches every engine (ADR-0001 W1-W7).** The project owner asked whether a contributor has to implement each feature per database. An architecture evaluation sampled 242 upstream database commits from the last year. 77% touched no migration, entity, routine, raw SQL or `EF.Functions` call and need nothing per engine. Of 21 checked by hand, 11 needed nothing, 4 needed only generated migrations and 6 needed engine judgement. About 40% of upstream migrations contain hand-written SQLite SQL, and nothing compared migrations across engines. It also proved the design-time id generator on EF 10.0.12.
+  - **New upstream-bound steps in group C0:** 22b (id generator, one command, provider-table theory, guide), 22c (migration-contents check with allowlist) and 22d (raw-SQL ban and the conformance kit on SQLite and PostgreSQL). The old step 27a is split: its upstream half is 22d, and 27a keeps `EngineTraits`, the MySQL/MariaDB kit rows and the `[` escape.
+  - **Branch bases.** 22b is cut from the `feature/multi-db` tip before step 24 is merged (the commit that records this amendment), and 22c and 22d from the step before each. Their commits then replay before group C in `multidb/upstream` without edits. They are merged into `feature/multi-db` after steps 24 and 24b, and any conflict with group C is resolved in the merge commit, never by rewriting a merged step.
+  - **Order.** Steps 24 and 24b merge first. Then 22b and step 25 run in parallel. Step 25's baseline, registration and migration tests do not need 22b. Its workflow rows (MySQL in the theory, the command and the contents check) are its last commits, written after 22b merges; step 25 is unmerged, so it is rebased onto `feature/multi-db` for them (S5). 22c follows 22b, and 22d follows 22c. 27a follows 22d and 26, and stays before any SQL Server work.
+  - **Correction to the orchestrator's first view.** MySQL index prefix lengths are model annotations set by a convention, so EF generates them. The hand edits a generated migration can need are data SQL, expression indexes, renames (EF scaffolds drop plus add) and type changes that need `USING`.
+  - **For the owner's list, not acted on:** whether the PostgreSQL leg becomes a required check upstream; CODEOWNERS for `src/Jellyfin.Database/**` and the gap ledger; a database checklist in the PR template (`.github/` is core-owned); whether upstream accepts a second migrations set at all; in-tree versus plugin providers (already listed, ADR-0001 E5).
+
+## Amendments (step 24, 2026-10-14)
+
+- **Per-commit builds (2026-10-14).** `dotnet build tests/<project> --no-incremental` fails at every commit, including the base, with CS0234 for `MediaBrowser.Model.MimeTypes` (`MediaBrowser.Model/Net/MimeTypes.cs:170,196`). The `MimeTypes` 2.5.2 package compiles its type in from source, and a single-project rebuild leaves it out. A plain project build and `dotnet build Jellyfin.sln --no-incremental` are not affected. So per-commit scripts build each commit in a new worktree, or delete every `bin` and `obj` folder first, and then run a plain `dotnet build tests/<project>`.
+
+## Amendments (upstream sync and step 25, 2026-10-15)
+
+- **B18. S5 lapsed; the gated sync `81f29427e6` corrects it.**
+  - **The lapse.** `upstream/master` had not been merged into `feature/multi-db` since `61f9a9df23`. The S9 row for #17879 recorded upstream at `e53a6d3e6a` on 2026-10-13, but nothing was merged. It was a lapse of S5, not a deliberate deferral.
+  - **The merge.** `81f29427e6` merges upstream `aec42b345e` (7 commits, 15 paths) into `d38fccdf44`. Upstream changed nothing under `src/Jellyfin.Database`, `Jellyfin.Server.Implementations/Item`, `Jellyfin.Server/Migrations`, `FullSystemBackup` or CI, and added no SQLite migration or routine. So nothing was generated or re-dated.
+  - **Pure apart from its conflict resolutions.** Four files differ from both parents:
+    - `Directory.Packages.props`, the one conflict: upstream's Microsoft 10.0.12, Test.Sdk 18.11.0 and System.Text.Json 10.0.13 are taken; the fork's provider, Testcontainers and xUnit pins are kept;
+    - `CONTRIBUTORS.md`, with both names in the shared hunk;
+    - `ProbeResultNormalizer.cs` and its tests, auto-merged with X2 and upstream #18243 side by side.
+  - **Proof.** `/tmp/upstream-sync-20261015/run.Gqpr1O8j`: 17 gates rc 0, complete. Passed/skipped, 0 failed:
+    - SQLite 2314/103, 152/8, 137/11;
+    - PostgreSQL 2346/68, 146/14, Integration 144/6;
+    - MySQL and MariaDB 2251/147 and 104/55;
+    - MediaEncoding 105/1.
+
+    Debug warnings 211 unique, identical to the `d38fccdf44` baseline. A static review approved the merge as pure. Details: `explainers/sync-upstream-20261015.md`.
+- **B19. ci-fix-2, the positive-control lesson and cross-platform CI.**
+  - **The lesson.** ci-fix-1 merged at `cec9b58f17` on one APPROVE WITH NITS review. A second review judged its handle tests not approvable on test strength: parallel `ClearAllPools`, a catch-all `IOException`, and no positive control. A missing positive control on a negative-only assertion is a blocker, not a nit, even when one mutant run passes.
+  - **The fix.** ci-fix-2 (test-only, merged `d38fccdf44`) isolates the handle tests from process-wide pool clearing, adds a positive control, and checks the `.old` renames on every platform. Linux negative controls A, B and C are in `/tmp/ci-fix-2/negative`.
+  - **Post-merge proof** (`/tmp/ci-fix-2/postmerge`): 11 gates rc 0. Results match the sync proof above for SQLite, PostgreSQL Implementations/Server and both MySQL-family engines.
+  - **Fork CI at `d38fccdf44`** (`/tmp/ci-pr1/windows3.log`). Windows: Server.Tests 151/9, Implementations 2289/128, Integration 137/11, 0 failed. Among the handle tests only the Linux `/proc` positive control (`OpenLegacyFiles_FileHeldOpen_ListsTheFile`) is skipped. Format, Ubuntu, macOS, PostgreSQL, ABI, CodeQL and OpenAPI were relayed green.
+  - **Fork CI at the sync tip `81f29427e6`** was relayed all green: format, Ubuntu, macOS, Windows, the PostgreSQL job, ABI (no difference) and CodeQL. No local log of that run was kept.
+- **B20. Step 25 as built.**
+  - **Branch.** Nine commits, rebased onto `81f29427e6` with `range-diff` 9/9 identical; the pre-sync tip is kept on `multidb/25-before-sync-rebase` (`1f6dfa2e50`). Merged with `--no-ff` as `abf45dcad2`; the merge tree equals the tip tree.
+  - **Definitive proof** `/tmp/step25/definitive.V40kdWS7`. Every per-commit leg of all nine commits passed, and so did every tip gate before the container check: Release 0/0, format, the four engines, PostgreSQL twice, MariaDB 11.8 advisory 2346/137 on 11.8.9, Debug 211 equal to the sync base, the unskip reconciliation (31 passed + 4 baseline-covered skips per engine) and the `dev/add-migration` workflow run. Its rc 59 abort was a false positive of the container gate (B25). The ending HEAD and status were checked afterwards.
+  - **Post-merge proof** `/tmp/step25/postmerge`: 14 gates rc 0, complete, Release 0/0. Passed/skipped, 0 failed:
+
+    | Engine | Implementations | Server.Tests | Integration |
+    |---|---|---|---|
+    | SQLite | 2386/111 | 152/9 | 137/11 |
+    | PostgreSQL 16.15 | 2418/76 | 146/15 | 144/6 |
+    | MySQL 8.4.11 | 2346/137 | 126/35 | 144/6 |
+    | MariaDB 11.4.13 | 2346/137 | 126/35 | 144/6 |
+
+    MySQL-family Server.Tests rose from 104 to 126 passed, and the integration suite now runs on both servers.
+  - **Fork CI at `abf45dcad2`** was relayed green on every job: format, Ubuntu, macOS, Windows (8m46s), the PostgreSQL job (10m58s), ABI (no difference) and CodeQL. No local log of that run was kept.
+  - **Server.Tests provenance is companion-based.** Server.Tests has no sentinel of its own. A provider run of it is attributed to its engine by the Implementations sentinel of the same run, plus the audited provider selection in `Jellyfin.Database.Testing`. Reports and explainers say so until B21 lands.
+  - **Gate follow-ups:**
+    - the MySQL copy of `PairedMigrationsIdGenerator`, with its parity tests, was accepted until 22c. **Done in 22c (B27):** one shared internal generator in `Jellyfin.Database.Implementations.DesignTime`; the 22c merge `d59093e95c` moves MySQL to it and removes the copy, `MySqlPairedMigrationsIdGeneratorTests` and `ProviderSourceParityTests`;
+    - in the replay, the version-detection commit becomes a fixup into step 24;
+    - 27a puts the history-in-fingerprint rule into the pool contract and moves the provider-to-assembly switch out of `ProviderRequirement.MigrationIds`. **Done in 27a (B31):** `1249673827` makes the pool fingerprint every pooled database's history, and `fa406640fb` moves the switch into `EngineTraits`;
+    - `OfflineContexts` leaves the PostgreSQL test namespace. **Done in 27a** (`c380ab7d19`, B31);
+    - the first MySQL migration after the baseline needs an upgrade test from a baseline-only database;
+    - document that the transactional wrapper tests service behaviour only;
+    - step 26 adds MariaDB 11.8 as an advisory CI entry.
+  - Details: `explainers/25-mysql-migrations-and-registration.md`.
+- **B21. New 22d item (upstream half): a sentinel in Server.Tests.** **Done in 22d (`580005950e`, B28):** Server.Tests provenance is now proven by its own sentinel on every engine, not by its companion runs.
+  - **The fact.** `ProviderBackend_IsLive` in `tests/Jellyfin.Server.Tests`, through `BackendLiveness.Verify`, printing the actual backend and server version. Every provider run of Server.Tests then proves its own backend.
+  - **Negative control.** A run with the wrong `JELLYFIN_TEST_EXPECTED_PROVIDER` must fail.
+  - **Scope.** Step 25's approved commits and the frozen harness stay unchanged.
+- **B22. X7, X8 and X9, under the standing rule that small upstream bugs are fixed inside this work (S10).**
+  - **When.** They start after the sync and step 25, both done, and do not block either. One at a time, like X3 and X5: an upstream-shaped branch from `upstream/master` plus a fork merge candidate, failing test first, per-commit and final-tip proofs, independent review, `--no-ff` merge, post-merge proof. Before each is cut, check upstream for an existing fix and check open #17012 and #16393 for overlap.
+  - **X7, culture-sensitive `#EXTINF`** (`SubtitleController`, already present at `61f9a9df23`). The test sets `CultureInfo.CurrentCulture` to fr-FR and restores it. With 45,000,000 ticks and segment length 10 it first fails showing `#EXTINF:4,5`, and passes with invariant formatting.
+  - **X8, global `WEBVTT` replace** (already present at `61f9a9df23`). The failing test has the cue "Say WEBVTT aloud". The fix touches only the header line and leaves the cue text unchanged.
+  - **X9, the raw-bytes return for an unsupported charset** (new upstream with #18309). Conditional: it is fixed only if a runtime test with a real ISO-8859-16 SRT, or whatever the detector actually reports as unsupported, shows garbled output where the earlier code rejected the file. Static reading or a mocked detector is not enough. If it does not reproduce, it stays on the watch list.
+    - **Closed on 2026-10-15: not reproduced as a #18309 regression; no fix in this series.** A runtime probe (`/tmp/x9-probe/`) ran 25 generated SRT sample files on disk (with expected text), through the real `SubtitleEncoder`, `SubtitleEditParser` and UTF.Unknown 2.7.0 on .NET 10.0.12. It was built once without the #18309 guard (`out-pre/`, `run-pre-all.log`) and once with it (`out-post/`, `run-post-all.log`). The source commits of the two builds were not retained; the pre/post split rests on the guard's "returning stream as-is" log appearing only in the post build. FFmpeg (`IMediaEncoder`) was mocked, which does not affect this path: a parser-supported external SRT never reaches FFmpeg.
+      - **Detector.** UTF.Unknown reports `iso-8859-16` for the Romanian, Croatian and Polish samples and `iso-8859-10` for the Latvian and Lithuanian samples, each with a null `Encoding` (`inventory.log`: `Encoding.GetEncoding` rejects both names). The Hungarian and French ISO-8859-16 samples are detected as `iso-8859-2` and `iso-8859-1`, so they never reach the guard. Only those five files log "returning stream as-is".
+      - **Before #18309 the output was already garbled.** `new StreamReader(stream, null)` does not throw on .NET 10; it falls back to UTF-8 (`srnull.log`: no exception, CurrentEncoding utf-8, 232 U+FFFD, the same count as the Romanian sample's output). Neither build threw for any file. B22's premise, that the earlier code rejected the file, does not hold.
+      - **After #18309.** For the five files, srt to vtt output is byte-identical to before. srt to srt now returns the raw ISO bytes, identical to the input file, instead of UTF-8 with U+FFFD. That is a different failure, not clearly a worse one. All other outputs are byte-identical between the two builds.
+      - **Decision.** The real defect, garbled text for charsets .NET cannot decode, predates #18309. Fixing it means routing those files through FFmpeg's `-sub_charenc` (iconv), a subtitle-pipeline change outside the multi-database scope. Both points are upstream-note candidates in B26.
+      - **Housekeeping.** The `x9-probe` worktree was removed (it was clean); `/tmp/x9-probe/` is kept as evidence.
+  - **P3: the duplicate ISO-8859-7 test** from #18309. Recorded only.
+  - **Status on 2026-10-15: X7 and X8 locally merged and proven; X9 closed without a fix.** Details and evidence paths are in [the X7/X8 explainer](explainers/x7-x8-subtitles.md).
+    - **X7.** Upstream-shaped `837cf78032` on `aec42b345e`; fork `68ea0d1249`, the same patch (patch-id `48443ff0ef`). Red: expected `#EXTINF:4.5,`, actual `#EXTINF:4,5,`. Merged by `0f118c6b7c` (parents `37f86395df`, `68ea0d1249`). Post-merge `/tmp/x7x8/postmerge/postmerge-run.yfdrTbhq/`: 16/16 gates rc 0, API 166, MediaEncoding 105/1, provider rows 11,212 (10,619 passed, 593 skipped), zero failures. Relayed CI at `0f118c6b7c`: format, the three platform test jobs, the PostgreSQL database job, ABI and CodeQL succeeded; PostgreSQL is CI's only database job.
+    - **X8.** Upstream-shaped `34dc00973a` on `aec42b345e`, a message-only amend of `cd12b4dcdc` (tree `f1be4647ed`); v1 `0e3275af52` split header text after the signature and was replaced. Red 5 failed / 1 passed on both shapes, green 6/6. Fork `96b3b718a9` drops only the `using System.Text;` that X7 already added. Merged by `5d8b85e832` (tree `cd096ce8f9`, identical to the candidate). Post-merge `/tmp/x7x8/postmerge/x8-postmerge-run.q05sdoYe/`: 16/16 gates rc 0, 14 TRX files, 11,490 rows (10,896 passed, 594 skipped), zero failures. Both merges are on origin `feature/multi-db`, pushed by the coordinator (checked read-only with `git ls-remote`); the orchestrator and the docs writer pushed nothing. CI at `5d8b85e832`, relayed from the orchestrator's read-only `gh` read of the check runs: `format-check`, `run-tests` on `ubuntu-latest`, `macos-latest` and `windows-latest`, `run-tests-db` for PostgreSQL, all ABI jobs (BASE, HEAD, Difference, Common Ancestor, Generate Report, Base/Head Artifact) and CodeQL with Analyze (csharp) succeeded; the housekeeping jobs (Rename, Rebase, Release project board, main) were skipped. No CI log is kept locally. CI's only database job is PostgreSQL, so the MySQL and MariaDB evidence for this merge remains the local post-merge matrix. Origin `feature/multi-db` is now `be39fc9afb`, pushed by the coordinator and checked with `git ls-remote`; from then on, docs-only commits are pushed together with the next code merge. The upstream-shaped branches are local and unpushed, and nothing has been offered upstream.
+    - **Both.** Every recorded Release build has 0 warnings and 0 errors; each fork candidate's Debug comparison has 211 warnings on each side and an empty diff. The coordinator reports independent static APPROVE at both shapes of each fix. Server.Tests provenance remains companion-only (B21). Bare-CR WebVTT is unsupported, and non-`WEBVTT` input gets no map, by design.
+    - **X9** was closed after a runtime probe with the real charset detector: not reproduced as a #18309 regression, no fix in this series (see the X9 bullet above, and B26).
+- **B23. S9 watch list, read-only scan of 2026-10-15.**
+
+  | Upstream | State at scan | Our response |
+  |---|---|---|
+  | #17299, #18309 | merged 2026-10-13 (`e53a6d3e6a`; backport `f624cb4cc5`), in the fork since B18 | Source of X7-X9 triage; no upstream follow-up for the raw-bytes return, EXTINF culture or WEBVTT replace yet. X7 and X8 are fixed in the fork; X9 is closed without a fix (B22). #18309's comment and test are recorded as upstream-note candidates (B26) |
+  | #17012 | open; touches `SubtitleEncoder` only | Skips charset detection for WebVTT; check for overlap before X9. Checked read-only by the orchestrator on 2026-10-15: still open; it changes only `SubtitleEncoder`'s charset return, adding a WebVTT and confidence >= 0.5 gate. It does not address encodings .NET cannot open, or #18309's comment. Merge-conflict risk only |
+  | #16393 | open; touches `SubtitleEncoder` and tests | External subtitle loading for STRM; check for overlap before X9. Checked read-only by the orchestrator on 2026-10-15: still open; it changes only the protocol passed to `DetectCharset` and touches neither B26 point. Merge-conflict risk only |
+  | #17878, #18417, #18365, #17644 | Renovate, all open | dotnet-ef 10.0.13 (touches tools), SharpCompress 0.50.5, a packaging action, and xUnit v4. #17644 would collide with the fork's `xunit.v3` pins |
+  | #18381, #18423 | open, updated 2026-10-14 | Touch the X3 area (the `recentCutoff` line and its tests); responses as in S9 |
+  | #17879 | merged (`619eb231b4`) | Supersedes step 23; drop step 23 in the final replay |
+
+  X6 is added to the S9 table. No other watched PR had landed.
+  - **X5/X6 status, superseded on 2026-10-15.** Both are locally merged by `a5f1e5b2c91dd9c3b0f9c0e5a364ac396c980108`, parents `39026f46fb479fb4977b16f3f0b9ce9468f3554b` and fork tip `47b844674bd058d8fcb1a659e569a6ba96cd1039`. The upstream-shaped pair is `7ce3511a84`, `b4642f0dbf` on `aec42b345e`; the fork pair is `cecac3f9b5`, `47b844674b` on `abf45dcad2`. Both rebase range-diffs are unchanged (`=`). The coordinator reports independent static APPROVE, no blockers. This supersedes the earlier not-merged/proof-running status, not the distinction between a fork merge and an upstream merge.
+  - **Verified proof.** Premerge `/tmp/x5/rebase-20261015/run.080031.2985950/` passes per-commit Release (zero warnings/errors), format and tests; X5/X6 negative controls show the intended failures. Each branch shape's exact-base/final-tip Debug comparison has 211 warnings on each side and an empty normalized diff. Postmerge `/tmp/x5/postmerge/run.GmZeHdZp/` is COMPLETE, all 14 gates rc 0, Release zero warnings/errors, exact format and 12 suites with zero failures. Independent TRX counting confirms 11,212 result rows. Passed/skipped (Implementations; Server.Tests; Integration): SQLite **2386/111; 156/9; 137/11**; PostgreSQL 16.15 **2418/76; 146/18; 144/6**; MySQL 8.4.11 and MariaDB 11.4.13 each **2346/137; 126/38; 144/6**. All four Implementations and Integration sentinels pass; Server.Tests remains companion-only. Start/end identities and clean statuses match the exact merge; Docker added/removed/new-labelled reconciliation lists are empty. Fork CI on PR #1 at head `a5f1e5b2c9`, relayed from the orchestrator's read-only `gh api` read of the check runs: `format-check`, `run-tests` on Ubuntu, macOS and Windows, `run-tests-db` for PostgreSQL, the ABI jobs and CodeQL (Analyze csharp) all completed with success; the workflow-housekeeping jobs were skipped. No CI log is kept locally. CI's only database job is PostgreSQL, so the MySQL and MariaDB evidence for this merge remains the local postmerge matrix. See [the X5/X6 explainer](explainers/x5-activitylog-import.md).
+  - **Limitation.** The X5 fix does not repair a server whose earlier upgrade already dropped activity entries and recorded the migration as applied. Those entries survive only in `activitylog.db.old`. Any recovery path is deferred, to later or to upstream, and is not part of the fix.
+- **B24. Legacy-migration issues: upstream-note candidates, not fixed in this series.**
+  - **Crash idempotence.** `MigrateDisplayPreferencesDb` and `MigrateAuthenticationDb` save the target rows before they archive the source and before the migration history row is written. A run interrupted in between imports again on the next start and can hit unique indexes.
+  - **Swallowed rename failure.** The four legacy import routines (activity log, users, display preferences, authentication) catch the `IOException` from the archive rename and only log it. The migration is still recorded as applied, so a failed rename is silent and never retried.
+  - The owner may raise these upstream.
+- **B25. Proof-process lessons.**
+  - **Positive controls in harness audits.** A harness audit includes a full-suite TRX positive control, not only targeted subsets. Step 25's first definitive attempt stopped (rc 23) because the validator assumed one TRX result per test definition, and xUnit theories with non-serialisable data produce several results under one definition.
+  - **Child processes must not inherit the heavy lock.** A `VBCSCompiler` started by a build inherited fd 9 and held `/tmp/multidb-heavy.lock` through its idle timeout, so the next launch was refused (rc 89). Children now close fd 9 (`exec 9>&-`, or `flock -o`).
+  - **Container gates use Testcontainers labels.** On a shared machine, any new `docker ps -a` identity is not ours to judge. The gate counts only new identities with the `org.testcontainers` or session labels, and records the rest in `container-unrelated-new.txt`. Still to fold in: a short wait for our Ryuk to exit before the final snapshot.
+  - **Format workspace notice.** `dotnet format --verbosity diagnostic` on the X7 candidate exited 0 and formatted 0 files. Its one load diagnostic is the Debug-only analyzer `ProjectReference` to `Jellyfin.CodeAnalysis.csproj` with no matching metadata reference (`Directory.Build.props:23-24`). It is a notice, not a format failure, and it is not fixed. Evidence: `/tmp/x7x8/fork-x7.Ep7y8RGB/format-diagnostics/`.
+  - **Long runs need an exit waiter.** A watch that expires after 30 minutes missed step 25's 03:46 exit by about 4 hours. Use a background exit waiter (up to 2 hours), or re-arm the watch on every expiry.
+- **B26. Subtitle charset issues: upstream-note candidates, not fixed in this series.** Notes for the owner, from the X9 probe (B22); no upstream text is written here.
+  - **Charsets .NET cannot decode.** External text subtitles in ISO-8859-16 or ISO-8859-10 come out garbled, because .NET has no encoding for either. This affects Romanian, Croatian, Polish, Latvian and Lithuanian files. On this path the parser-supported SRT is decoded in-process and never reaches FFmpeg: the only place the C# code adds `-sub_charenc` is `ConvertTextSubtitleToSrtInternal` (`SubtitleEncoder.cs:441`, the flag at `:462`), which is reached for formats the parser does not support (`SubtitleEncoder.cs:249-250`). The probable fix is to hand these files to FFmpeg with `-sub_charenc`, which #18309's comment assumes already happens. The defect predates #18309.
+  - **#18309's comment and test.** The comment at `SubtitleEncoder.cs:192` ("passed to ffmpeg via -sub_charenc if needed") is wrong for this path. Its test, `GetSubtitleStream_UnsupportedEncoding_DoesNotThrow` (`SubtitleEncoderTests.cs:273`), writes ISO-8859-7, which is detected as supported, so it never reaches the new branch (see P3 in B22).
+  - Open #17012 and #16393 overlap only as merge conflicts (B23). The owner may raise these upstream.
+
+## Amendments (step 22c, 2026-10-15)
+
+- **B27. Step 22c, the migration contents check, as built.** Details and evidence paths are in [the 22c explainer](explainers/22c-migration-contents-check.md).
+  - **Branches.**
+    - **Upstream-shaped.** `multidb/22c-migration-contents-check` on `d37f0d08fb`:
+      - `d95815c0cc` moves the paired id generator and the SQLite migrations finder into `Jellyfin.Database.Implementations.DesignTime`, as internal types, with no new `InternalsVisibleTo`;
+      - `ac04957b95` adds the check;
+      - `70082dda51` updates the readme.
+    - **Fork.** The merge is `d59093e95c` (parents `693da13de8`, `70082dda51`), and `5597fca7cc` compares one row per migrations assembly, with MySQL and MariaDB collapsed as "MySQL 8.4".
+    - **State.** The orchestrator fast-forwarded `feature/multi-db` to `5597fca7cc`. That code tip is on origin `feature/multi-db`, pushed by the coordinator; the orchestrator checked this read-only with `git ls-remote` on 2026-10-15 (relayed). The docs commit `ed644cf583` and its follow-up go up with the next code merge. CI at `5597fca7cc` was later green, as relayed (see CI below).
+    - **Backups, kept.** A: `-backup-a` `788a28775a`, `-backup-b` `d1ff0939dd`. Fork `multidb/22c-merge-candidate`: `-backup-a` `ed39922868`, `-backup-b` `7452d0826e`, `-backup-c` `1f61eb54d9`.
+  - **The merge resolves the group C conflicts, as B17 allows.**
+    - MySQL moves to the shared generator. The copy, `MySqlPairedMigrationsIdGeneratorTests` and `ProviderSourceParityTests` go, which settles B20's first gate follow-up.
+    - It adds the fork-only category `BaselineCoverage`, accepted only for a row's `BaselineId`.
+    - It adds 10 `20200101000000_InitialCreate` entries: 7 `BaselineCoverage` and 3 `EngineSpecific`.
+    - The sync `81f29427e6` brought no migrations.
+  - **What the check compares.** For every id that more than one migrations assembly has, it compares the offline `Up` and `Down` operations:
+    - by kind, table and columns, with nullability, uniqueness and foreign-key on-delete;
+    - for `CreateTable`, each column and key separately;
+    - for SQL, the first 16 hex digits of the SHA-256 of the white-space-normalised text, plus a 60-character excerpt.
+  - **Allowlist rules.** `MigrationContentsAllowlist.json` is an exact-witness allowlist.
+    - The check fails on missing, stale, ambiguous and invalid entries, and on parse errors, which are wrapped. Every failure names `dev/add-migration`.
+    - `LegacySqliteData` is allowed for SQLite only, and `BaselineCoverage` only for a row's `BaselineId`.
+  - **What the check does not compare.** Annotations, types and maximum lengths, defaults and computed SQL, collations, index filters, check-constraint SQL, names of new indexes and constraints, data values, and operation order. A hand edit to one of these in one provider's migration body is caught by neither this check nor the pending-changes check, which compares the snapshot with the model.
+  - **Allowlist as merged.**
+    - **Fork:** 17 entries:
+      - 7 `BaselineCoverage`;
+      - 4 `EngineSpecific`: MySQL `AlterDatabase` utf8mb4, the PostgreSQL `min(uuid)` aggregate create and drop, and the PostgreSQL-only `DROP DEFAULT`;
+      - 6 `EquivalentSql`.
+    - **A:** 7 entries.
+    - **Tables:** `/tmp/22c/allowlist/`.
+    - **`DROP DEFAULT`.** SQLite keeps the `''` default on `Peoples.NameLower`, because it cannot drop a default without a table rebuild. EF Core writes the column on every insert, so this is an observation, not a bug, and the PostgreSQL drop is `EngineSpecific`.
+    - **`AddNormalisedMatchColumns` `Down`.** The independent reviewer hand-checked that the three SQLite SQL statements act on the same objects, in the same order, as PostgreSQL's `DropIndex` and `DropColumn` operations, and recomputed all six hashes (the reviewer's reasoning, relayed).
+  - **Correction to B17's estimate.** 12 of the fork's 57 SQLite migrations contain `migrationBuilder.Sql`, not about 40%. Only `20261013120000_AddNormalisedMatchColumns` is paired. Every earlier SQLite migration is covered by the PostgreSQL and MySQL baselines, so it is not paired or compared.
+  - **Review.** Relayed; the notes are not in the evidence.
+    - **First review: FAIL.** Blocker B1: a parse-time `JsonException` did not name the command. Should-fix: S1 to S3, C-S1 and the docs.
+    - **Re-review: APPROVE** on both shapes.
+    - **N-A1** was then folded in as a comment-only change, proven by `/tmp/22c/chain3/NA1-*.diff`, which equal the git diffs between the round 2 and final tips.
+    - **Not done.** N-A2 (a missing allowlist file is not wrapped) and N-A3 (some tests do not assert the command) are optional follow-ups.
+  - **Commit-chain rule.** No commit may be red by design, because the upstream series is reviewed commit by commit.
+    - The chain was rewritten and every commit gated (`/tmp/22c/chain3/gates/results.tsv`, `COMPLETE`, rc 0).
+    - **Incident.** One gate run was interrupted by an accidental `TaskStop`, during the format gate of the round 1 merge `5774b18c61`. It is kept as `/tmp/22c/superseded/chain-round1/gates-interrupted-1/`, and was rerun before that chain was superseded.
+  - **Format gate and replay rule.**
+    - **Branch A's format gate is "equal to base":** the same 6 errors as `d37f0d08fb`, 2 × SA1611 in `BaseItemRepositorySortNameFilterTests.cs` and 4 × SA1615 in `PostgresMigrationAtomicityTests.cs`.
+    - **Fork commits must reach rc 0.**
+    - **Replay rule.** In `multidb/upstream`, fold `62282ffd55` as a fixup into the steps that introduced those files, `bcdd6b9259` and `651c8dd720`. Evidence: `/tmp/22c/format-probe/DECISION.txt`.
+  - **Proofs.**
+    - **Fork `5597fca7cc`** (`/tmp/22c/fork-proof/`): 14/14 rc 0, Release 0/0, format 0. Passed/skipped (Implementations; Server.Tests; Integration):
+      - SQLite **2408/111; 156/9; 137/11**;
+      - PostgreSQL 16.15 **2440/76; 146/18; 144/6**;
+      - MySQL 8.4.11 and MariaDB 11.4.13 each **2368/137; 126/38; 144/6**.
+
+      11,300 TRX rows: 10,707 passed, 593 skipped. I recounted them, and the orchestrator recounted them independently. Sentinels pass; Server.Tests provenance is companion-only (B21). Docker clean; identity exact and clean.
+    - **Branch A `70082dda51`** (`/tmp/22c/A-proof/`):
+      - SQLite **2065/87; 144/8; 137/11**;
+      - PostgreSQL **2097/52; 139/13; 144/6**.
+
+      4,903 TRX rows: 4,726 passed, 177 skipped. Format is equal to base.
+    - **Debug** (`/tmp/22c/fork-debug/`, `/tmp/22c/A-debug/`): 211 against 211 on each shape, with empty diffs.
+    - **Negative controls** (`/tmp/22c/negative/{fork,A}`): missing, stale (an extra and an altered entry), the six normalised `Down` entries removed, ambiguous, and an unknown category.
+      - Each fails as expected and names `dev/add-migration`, and each run is restored to green.
+      - Fork run 1, with a bug in the script's search string, is kept in `fork-run1-needle-bug/` and noted.
+    - **Parity** (`/tmp/22c/parity/fork/`): `dev/add-migration` gave the same id on SQLite, PostgreSQL and MySQL. A name with no SQLite twin got fresh ids on PostgreSQL and MySQL.
+    - **Per-commit gates:** `/tmp/22c/chain3/gates/results.tsv`.
+  - **CI.** CI at `5597fca7cc`, relayed from the orchestrator's read-only `gh` read of the check runs, all succeeded: `format-check`, `run-tests` on Ubuntu, macOS and Windows, `run-tests-db` for PostgreSQL, all ABI jobs (`ABI - Difference` confirms that the internal `DesignTime` types change no checked API) and CodeQL with Analyze (csharp); the housekeeping jobs were skipped. No CI log is kept locally. CI's only database job is PostgreSQL, so the MySQL and MariaDB evidence is the local matrix.
+
+## Amendments (step 22d, 2026-10-15)
+
+- **B28. Step 22d, the raw SQL ban and the conformance kit, as built.** Details and evidence paths are in [the 22d explainer](explainers/22d-raw-sql-ban-and-kit.md).
+  - **Branches.**
+    - **Upstream-shaped.** `multidb/22d-raw-sql-ban-and-kit` on `70082dda51`:
+      - `98dcacbfc6`, the ban;
+      - `cddbb29d77`, which moves `TemporaryTimeZone`;
+      - `6ba81682b7`, the kit;
+      - `d6b1d8169b`, which replaces the purge tests;
+      - `580005950e`, the Server sentinel.
+    - **Backups:** `-backup-a` `131c6caf67`, `-b` `924f969d87`, `-c` `df6c59aaa1`, `-d` `5ca59314c4`.
+    - **Fork merge.** `2b3bcd0649` (parents `1847099b6c`, `580005950e`, tree `9a09b376f6`). The orchestrator fast-forwarded `feature/multi-db` to it. It is on origin `feature/multi-db`, pushed by the coordinator, and was checked read-only with `git ls-remote` on 2026-10-15 (relayed). The 22d docs commits go up with the next code merge. No CI result at `2b3bcd0649` is claimed.
+  - **Ban.**
+    - `BannedSymbols.Database.txt` has 25 ids, verified against the package XML (`/tmp/22d/ban-ids/`).
+    - It is applied by path: to every project except those under `tests/` and `Jellyfin.Database.Providers.*`. There is no opt-out property, because MSBuild imports environment variables as properties.
+    - `DatabaseBannedSymbolsTests` resolves the ids by reflection; pinned exemptions apply only on `FileNotFoundException`.
+    - **Suppressions.** 7 production suppressions, each scoped. On the fork, `MigrateLibraryDb` has a scoped pragma at `:85-91`, and its file-wide disable is removed. 4 unused file-wide disables were removed.
+    - **Still hidden.** 20 file-wide `RS0030` disables still hide the ban. This is follow-up 1, for 27a, because analyzer 5.6.0 has only `RS0030`.
+  - **Scope decision.** The implementer reported 109 suppressions in the first version: 7 in production and 102 in tests. My union of `/tmp/22d/dev/ban-sites*.txt` gives 107 under `tests/`. The difference is unreconciled, and neither figure is preferred. The coordinator narrowed the ban to production code, because tests may be engine-specific by design.
+  - **Kit.**
+    - 55 cases: Purge 6, Restore 2, WriteConflict 4, FolderDelete 2, DateTimeLimits 12, Like 18, IdList 8, CompositeKey 1, Model 2. The brief said Purge 5; the TRX files show 6, which makes 55.
+    - SQLite: 53 passed, 2 skipped by `SQLITE-CONTAINS-PARAMETER-LIMIT`. PostgreSQL: 55 passed. MySQL and MariaDB: all skipped until 27a, 23 skipped results each.
+    - The restore row has self-expiring exceptions for `HomeSection` and the concurrency tokens. No fork ids appear in shipped text (H10).
+  - **B21 done.**
+    - The Server.Tests `ProviderBackend_IsLive` runs on every engine. Server.Tests provenance is now independently proven, not companion-based.
+    - Negative controls: a wrong expected provider fails on A and on the fork, including MySQL against MariaDB in both directions.
+  - **Review.** Relayed; `/tmp/22d/review/` keeps the range-diffs, not the notes.
+    - The kit and the other commits passed review first time.
+    - **Ban S1, a real bug.** The SQL Server `MigrationBuilder` id named the wrong namespace and matched nothing.
+    - **Other ban changes.**
+      - The environment-variable opt-out was replaced by the path rule.
+      - The pinned exemption was narrowed to `FileNotFoundException`.
+      - `GetDbConnection`, `ProviderName` and `ActiveProvider` are now banned.
+    - The A evidence was rerun.
+    - **Final:** APPROVE at `580005950e` and APPROVE at `2b3bcd0649`.
+    - **Process slip.** One `git add -A -- tests/` was used; nothing unintended was committed.
+  - **Proofs.** Passed/skipped (Implementations; Server.Tests; Integration):
+    - **A `580005950e`:**
+      - SQLite **2118/88; 145/8; 137/11**;
+      - PostgreSQL **2152/50; 140/13; 144/6**.
+
+      5,012 TRX rows (4,836 passed, 176 skipped). Format equal to base.
+    - **Fork `2b3bcd0649`:**
+      - SQLite **2461/112; 157/9; 137/11**;
+      - PostgreSQL 16.15 **2495/74; 147/18; 144/6**;
+      - MySQL 8.4.11 and MariaDB 11.4.13 each **2370/157; 127/38; 144/6**.
+
+      11,455 rows (10,823 Passed, 632 NotExecuted), recounted by me and independently by the orchestrator.
+    - **Both:** all three sentinels pass. Debug 211/211 on both shapes, empty diff. Per-commit gates are in `/tmp/22d/chain-{A,fork}`.
+  - **Negative controls** (`/tmp/22d/negative/`):
+    - **Server sentinel.** A wrong expected provider fails.
+    - **Kit.** The broken purge and restore rows fail.
+    - **Ban file.** A wrong MySQL id fails.
+    - **Ban injection.** It fires in production even with the environment variable set, and is silent in tests and providers. `ItemPersistenceService` is not reported (follow-up 1).
+    - **Masked run.** Purge-mutation run 1 was masked on PostgreSQL; that is F4.
+  - **Findings.**
+    - **F1 = X10.** `HomeSection` is lost on restore on every engine. **Fixed by X10** (`939887782c`, B29); the kit's `HomeSection` exception is removed.
+    - **F2.** Concurrency tokens are restored as 0. Upstream-note candidate; no concrete harm.
+    - **F3.** A plain `Contains` with 100k ids fails on SQLite. Upstream-note candidates, at `580005950e`: `LinkedChildrenService.cs:93`, `BaseItemRepository.TranslateQuery.cs:319`, and `ItemPersistenceService.cs:403`, `457`, `531` and `601`.
+    - **F4.** A partial purge differs. PostgreSQL uses `TRUNCATE ... CASCADE`; SQLite turns foreign keys off and leaves orphans. Every current caller purges all tables. Contract note or 27a kit row.
+  - **Follow-ups**, as numbered in the implementer's report. Items 2 to 10 are the implementer's words, verbatim, as relayed:
+    1. The 20 file-wide `RS0030` disables; a dedicated analyzer rule is planned for 27a. **Done in 27a:** JF0002 (`a142db1590`, B32).
+    2. Banned-symbol test TypeId: a generic declaring type is rendered wrongly and indexers aren't handled. Both can only cause a false failure.
+    3. The ban is Debug-only, which is the existing pattern.
+    4. ModelConformance compares the model with itself on SQLite, so it's meaningful only on PG.
+    5. The two SQLite-only routines (MigrateActivityLogDb, StripEmbeddedLinkedChildren) have no guard against another engine.
+    6. The CI sentinel check should be per project (step 26). **Done in step 26** (`f0f4aa5f44`, B30).
+    7. 27a: the sentinel doesn't tell MySQL from MariaDB. Fix it by comparing the server-reported flavour (MariaDB marker) with the selected provider, plus a negative control, using EngineTraits. **Done in 27a** (`ddd3d24b54`, B31).
+    8. The commit body could name MySqlRestoreIdentityTests and MySqlPurgeDatabaseArgumentTests (optional, not done).
+    9. 27a: check whether the kit duplicates those MySQL classes.
+    10. H10: no fork ids in shipped text.
+  - **22c CI.** Green at `5597fca7cc`, as relayed (B27).
+  - **CI at `2b3bcd0649`.** CI at `2b3bcd0649`, relayed from the orchestrator's read-only `gh` read of the check runs, all succeeded: `format-check`, `run-tests` on Ubuntu, macOS and Windows, `run-tests-db` for PostgreSQL, all ABI jobs and CodeQL with Analyze (csharp); the housekeeping jobs were skipped. No CI log is kept locally. The ABI jobs build `Jellyfin.Server` in Debug (`dotnet build Jellyfin.Server -o ./out`, `ci-compat.yml`), where the production ban is active, so their passing shows no unsuppressed banned use in `Jellyfin.Server` and its dependencies; that covers that build only, not the whole solution. The PostgreSQL job log shows `Jellyfin.Server.Tests` at 147 passed, 18 skipped, 0 failed, matching the local run where the Server sentinel passed. CI's sentinel check greps all TRX files of a job together (`ci-tests-db.yml`), and TRX artifacts are uploaded only on failure or cancellation, so CI alone does not prove the Server sentinel independently; step 26 makes the check per project. CI's only database job is PostgreSQL.
+
+## Amendments (X10, 2026-10-15)
+
+- **B29. X10, the home sections in backup and restore.** Details and evidence paths are in [the X10 explainer](explainers/x10-backup-home-sections.md).
+  - **Bug.** `HomeSection` had no `DbSet`, and `BackupService` backs up and restores sets only.
+    - On SQLite and PostgreSQL, the restore's purge cascaded from `DisplayPreferences` and deleted the sections.
+    - On MySQL and MariaDB, the purge runs with `foreign_key_checks = 0`. The sections survived the purge, and the restore left the post-backup sections in place, possibly orphaned.
+    - Either way, a restore did not give the sections back. The 22d kit found this (B28 F1).
+  - **Upstream-shaped fix.** `fix/backup-home-sections` `2084aa42b2` on `aec42b345e`; `-backup-a` `9f4da47963`.
+    - **A singular set.** `public DbSet<HomeSection> HomeSection`. A plural name would rename the table and need a migration. Backup keys entries by table name and restore looks them up by set name, so a mismatch would be skipped silently.
+    - **Archive keys kept.** `System.Text.Json` does not set private setters, so `DisplayPreferences` ids were regenerated and the sections' foreign keys dangled. With the set alone, the restore failed on a foreign key after the tables were emptied.
+    - **Read before the purge.** Keys are read and validated before the purge, and keyless sets are guarded (none exist).
+    - **Caveat in the body.** Restore now writes explicit identity values. That is correct on SQLite, which raises `sqlite_sequence`. Upstream has no `IDENTITY_INSERT` for SQL Server, and on PostgreSQL the sequences would be left behind.
+  - **Fork.** `multidb/x10-merge-candidate` `939887782c` on `3d0ab14734`; `-backup-a` `8ef5f18861`, the commit before a message-only reword, with the same tree `c2591c7402`.
+    - **What it adds.** Only the set and the test, because the fork's `BackupService` already reads keys before the purge and restores generated keys plus identity hooks.
+    - **The kit.** `RestoreConformance`'s not-in-the-backup list is removed; `HomeSection` was its only entry. The RowVersion exception remains and still expires on its own.
+    - **The reword.** The body originally said "deleted on every engine", which is wrong for MySQL and MariaDB.
+    - **State.** The orchestrator fast-forwarded `feature/multi-db` to `939887782c`. The upstream-shaped branch `fix/backup-home-sections` is local and unpushed, and nothing has been offered upstream.
+  - **Failing first.**
+    - **A.** The base with the tests only fails both new tests. The no-op-restore and no-pre-purge-read mutations fail as expected.
+    - **Fork.** The base with the test only fails on all four engines. The kept-gap kit row fails on SQLite and PostgreSQL with the "remove the table" message.
+  - **Gates.**
+    - **A.** Release 0/0; format rc 0 (the base is rc 0); SQLite Implementations 1090/1078/0 failed/12 skipped; Server.Tests 39/39.
+    - **Fork** (run at `8ef5f18861`, same tree). Release 0/0, format 0; 12 legs, total/passed/skipped:
+      - SQLite **2574/2462/112, 166/157/9, 148/137/11**;
+      - PostgreSQL **2570/2496/74, 165/147/18, 150/144/6**;
+      - MySQL and MariaDB each **2528/2371/157, 165/127/38, 150/144/6**.
+
+      11,459 rows: 10,827 Passed, 632 NotExecuted. I recounted them, and the orchestrator audited them independently. All three sentinels pass on every engine. Debug 211/211, empty diff.
+    - **Reworded commit.** The tree is identical, plus a Release and `BackupServiceTests` sanity check (65/65).
+  - **Next ids** (scratch, uncommitted, `/tmp/x10/identity-scratch/v3`). After a restore, new ids were above the restored maximum on all four engines. The PostgreSQL negative control without the completion hook collided (23505).
+  - **Backup compatibility.** The engine version stays 0.2.0.
+    - An old archive on a new server restores as before, without sections.
+    - A new archive on an old server ignores the `HomeSection` entry, without error.
+    - A version bump would make servers refuse each other's archives.
+  - **Review** (relayed). First review: APPROVE with S1 (the body), plus test hardening and the pre-purge read. Re-review: APPROVE on both shapes.
+  - **Notes.**
+    - **Upstream restore order.** Upstream restores Config and Data before a database restore it may refuse. This is pre-existing; the fork checks first. Upstream follow-up.
+    - **Two reads.** Every entry is now read twice, streamed.
+    - **MySQL and MariaDB.** The kit rows do not run there, so the `HomeSection` identity has no committed coverage there. For 27a.
+    - **A harmless `!`.** The fork's `GetGeneratedKeys` still uses `FindPrimaryKey()!`.
+  - **22d CI.** Green at `2b3bcd0649`, as relayed (B28).
+
+## Amendments (step 26, 2026-10-15)
+
+- **B30. Step 26, MySQL and MariaDB in CI, and the operator docs, as built.** Details and evidence paths are in [the step 26 explainer](explainers/26-ci-mysql-mariadb.md).
+  - **Chain** on `e5a50c3707`; the orchestrator fast-forwarded `feature/multi-db` to the tip `adf55de42f`. Backups `-backup-a` to `-d`: `55e5374554`, `2e8d1f7b39`, `6afca304cb`, `6bfef4ec33`.
+    1. **`f0f4aa5f44`, the per-project sentinel check** in `ci-tests-db.yml`.
+       - Each project's own sentinel is required by full name in its own TRX.
+       - The sentinel set must equal the projects that reference `Jellyfin.Database.Testing`, both ways.
+       - The version regex is escaped, and `requiredTests` uses `project:test`.
+       - The PostgreSQL job's name, triggers and required status are unchanged, and the nightly is updated. This closes B28 follow-up 6.
+    2. **`25d552ff3e`, `ci-tests-db-mysql.yml`.**
+       - **Triggers.** On every `pull_request`, nightly and by `workflow_dispatch`. Schedule and dispatch fire only once the workflow is on the default branch.
+       - **Entries.** All digest-pinned, none required: `MySql` 8.4.11, `MariaDb` 11.4.13, and the advisory `MySql LTS newest` 9.7.2 and `MariaDb LTS newest` 12.3.3.
+       - **Sources.** The release-policy sources are cited in the workflow. MySQL 26.7 is an Innovation release.
+    3. **`08af2f5ce1`, the `docs/database` how-to pages.**
+       - They are rendered from one template by `docs/database/render` (`--check`).
+       - Known issues: the collation item, and error 1020 on MariaDB 11.8+.
+       - `HomeSection` is restored from X10 on.
+    4. **`adf55de42f`, the Compose examples** under `docs/database/compose`, with a Dockerfile overlay.
+       - `JELLYFIN_DATABASE__CONNECTIONSTRING` reaches the provider through `Program.cs:416` and `ServiceCollectionExtensions.cs:152-165`.
+       - `database.xml` is copied on the first start only.
+  - **Proofs.**
+    - **Tip proof** `/tmp/26/proof` at `6afca304cb`; everything after it touches only workflows and `docs/database` (verified). It has 14/14 gates rc 0 (not 15, as the brief said).
+
+      11,459 rows (10,827 passed, 632 skipped), recounted by me; all sentinels pass. Passed/skipped (Implementations; Server.Tests; Integration):
+      - SQLite **2462/112; 157/9; 137/11**;
+      - PostgreSQL 16.15 **2496/74; 147/18; 144/6**;
+      - MySQL 8.4.11 and MariaDB 11.4.13 each **2371/157; 127/38; 144/6**.
+    - **Debug** 211/211, empty diff.
+    - **Per-commit gates:** `/tmp/26/round3/chain/results.tsv` and `/tmp/26/round4/chain/results.tsv`.
+    - **Local CI-leg reproduction.** PostgreSQL, MySql, MariaDb, MariaDb 11.8.9 and MySql 9.7.2 succeeded. The advisory MariaDb 12.3.3 had 1 integration failure, error 1020. An earlier 11.8.9 run also hit 1020 once, in the same test, so 11.8 is intermittent.
+    - **Negative control.** With the Server sentinel filtered out, the new check fails and the old check passes. Check-step controls: 12/12.
+    - **Compose.** 6/6 bring-ups, each Healthy and logging its provider, with a dump/restore round trip. Teardown left nothing. The script's own summary line mis-grepped a tab and exited 1; the recomputed verdict is 0 of 7 failed.
+  - **Review** (relayed).
+    - **First reviewer.** CI approved, with a should-fix that 11.8 was mislabelled as the newest LTS.
+    - **Split checks.** The orchestrator checked the Compose examples and the coordinator the collation text. Several reviewers dropped on API connection errors, so the review was split.
+    - **Fold rounds:** every-PR triggers, then the advisory switch to 9.7.2/12.3.3, then the collation wording, then the 1020 known issue.
+  - **Findings for 27a.**
+    1. **Isolation, a confirmed bug.** **Fixed in 27a** (`d429d74b10`, ADR-0008 S5, B31).
+       - MySqlConnector 2.6.2 (via Microting 10.0.12) maps `IsolationLevel.Unspecified` to REPEATABLE READ (`MySqlConnection.cs:195-205`), and sends `set session transaction isolation level repeatable read` before `start transaction` (`:239-250`).
+       - So every `BeginTransaction()` without a level overrides `SessionSettingsInterceptor.cs:30`'s READ COMMITTED, for the transaction and the rest of the connection.
+       - The runtime scratch check (`/tmp/26/isolation`) confirms it on 8.4.11, 9.7.2, 11.4.13, 11.8.9 and 12.3.3. With an explicit `ReadCommitted`, all five are fine.
+       - This violates ADR-0008 R3 on both servers. It is 27a's first item, and 27a records the ADR-0008 correction.
+    2. **Fixed in 27a:** no longer raised at READ COMMITTED, and retried as defence in depth (`04fde51282`, ADR-0008 S6, B31). **Error 1020** (`ER_CHECKREAD`) on MariaDB 11.8 and 12.3, where `innodb_snapshot_isolation` is on by default (11.4.13 = 0, 11.8.9 = 1, 12.3.3 = 1, verified). The classifier at `MySqlDatabaseProvider.cs:183` does not retry it.
+    3. **Collation.** **Fixed in 27a** (`f7edd3c017`, ADR-0006 C8, B31).
+       - In the baseline, `KeyframeTicks` (`InitialCreate.cs:525`) is the only one of 102 text columns without `utf8mb4_0900_bin`. It is not indexed or keyed.
+       - `AlterDatabase` at `:15` sets only the charset, so the database default is the server's insensitive collation. `__EFMigrationsHistory` inherits it, harmlessly.
+       - Fix in 27a: the convention covers converted and primitive-collection columns, `AlterDatabase` sets the collation, the baseline is regenerated, and a test checks it.
+  - **X10 CI** (relayed). Green at `939887782c`, including `ABI - Difference`, which is consistent with the additive `DbSet`. PostgreSQL is CI's only database job.
+
+## Amendments (step 27a so far, 2026-10-15)
+
+- **B31. Step 27a: isolation, collation, and the kit with `EngineTraits`, as merged so far.**
+  - Details, per-run commits and evidence paths are in [the 27a explainer](explainers/27a-mysql-family-hardening.md).
+  - The orchestrator fast-forwarded each part into `feature/multi-db`.
+  - The code commits record their own decisions: ADR-0008 S5 and S6, and ADR-0006 C8.
+  - **Isolation** (`d429d74b10`, `04fde51282`, `399af59770`, on `09cd63aca8`; evidence `/tmp/27a-iso`).
+    - **The fix.** `ReadCommittedConnection`, a subclass of Microting's `MySqlRelationalConnection` registered through `ReplaceService`, turns `Unspecified` into `ReadCommitted`. MySqlConnector 2.6.2, which Microting 10.0.12 depends on, mapped it to an explicit REPEATABLE READ. Error 1020 is now retryable.
+    - **Why not an interceptor.** A `DbTransactionInterceptor` was rejected:
+      - the event's level is read-only;
+      - the provider's interceptors run before the locking ones;
+      - `OptimisticLockBehavior` starts the transaction itself.
+
+      A design probe failed exactly the two Optimistic rows with "Transactions may not be nested".
+    - **Results.** `LibraryStructureControllerTests`, 10 runs per server: before, 7 of 10 failed on 12.3.3 and 5 of 10 on 11.8.9, all with 1020; after, 0 in 20. The red test fails 16 of 16 at the base.
+    - **Proof** at `e2d1f94cfc` (backup-c; same runtime code as the final commits): 10,896 passed, 657 skipped. Debug was compared at that tip only, 211/211.
+    - **Review and CI** (relayed). Review: APPROVE. CI at `399af59770`: green on every job, including the advisory MariaDB 12.3.3.
+  - **Collation** (`f7edd3c017`, `a0bf39394e`; evidence `/tmp/27a-coll`).
+    - **The commit.** `TextCollationConvention` selects text columns by store type and calls `UseCollation` per property.
+    - **The defaults.** The database and table defaults come from `HasCharSet`/`UseCollation(…, ApplyToAll)` in `MySqlDatabaseProvider.OnModelCreating` (`:171-172`). `BinaryCollationHistoryRepository` is swapped in at `:140`.
+    - **The baseline.** Regenerated against an empty snapshot; 102 of 102 text columns and 31 tables are now binary.
+    - **22c allowlist: 18 entries.** One reason changed, and the Down `AlterDatabase` was added.
+    - **No upgrade path.** Earlier fork-build databases are recreated, per ADR-0006 C8 (`:124`, `:140`), because the MySQL family is unreleased.
+    - **Results.** At the base, 14 of 22 rows fail; with the fix, 39 of 39 pass.
+    - **Where each run ran.** Proof, advisory, migration checks (48/48), red and green ran on the pre-fold pair `552c84018d` / `b990322cf1`. Only the per-commit fold gates and Debug (211/211, tip only) ran on the merged pair. The pairs differ only in a comment and the docs.
+    - **Proof.** 11,022 passed, 659 skipped.
+    - **Review and CI** (relayed). Review: APPROVE. CI at `a0bf39394e`: green on every job.
+  - **Kit and `EngineTraits`** (`c380ab7d19` → `fa406640fb` → `1249673827` → `ddd3d24b54` → `3790fe154e` → `919a1163bf` → `dd8c5d0d75` → `a6cd869ce7`; evidence `/tmp/27a-kit`).
+    - **What the chain adds:**
+      - helpers moved;
+      - `EngineTraits`, first with `Provider`, `ProviderType`, `CoversThroughSqliteMigration`, `IsEmbedded`, `AssertUniqueViolation` and `Pool`, then `ServerMarker`, `SupportsPartialIndexes` and `PurgeResetsIdentityInATransaction`;
+      - migration history in every pool's fingerprint, which deliberately changes the SQLite-file pool;
+      - the flavour sentinel;
+      - the kit on MySQL and MariaDB;
+      - the `[` escape, with 7 bracket cases;
+      - the purge contract: identity reset, except inside a transaction on MySQL and MariaDB;
+      - per-version collation tests.
+    - **Rulings and fixes.**
+      - The coordinator ruled `SupportsPartialIndexes` a capability trait, not a known gap: a narrow matcher, and 4 non-unique filtered indexes are full indexes on MySQL and MariaDB.
+      - The purge over-reset gap was found in review and fixed.
+      - CA1034 was caught by a Debug build at the then-tip `c951a1973f` and folded into `fa406640fb`.
+    - **Kit.** 64 `*ConformanceTests` rows per engine. SQLite: 62 passed, 2 skipped by its known gap. The other engines: 64/64.
+    - **Red controls.** Every row family was caught, but only across `red`, `red-fix` (corrected audit specs) and `red-fix2` (rerun of overwritten files), and FolderDelete only with repeats (below). Flavour controls 24/24. Both advisory legs passed.
+    - **Proof** at `a6cd869ce7`: 12,063 rows, 11,454 passed, 609 skipped, recounted by me and independently by the orchestrator.
+    - **Gates.** Per-commit gates 120/120: Release, format, render and 12 legs per commit. Debug was built for every kit commit, outside that table:
+      - six with recorded identities, 0 errors and a warning set equal to the base's: `c380ab7d19` (`debug-c1`), and `1249673827` to `dd8c5d0d75` (`dev/debug-each/results.tsv`);
+      - the tip in its own run (`debug`);
+      - `fa406640fb`, which has a Debug log without a recorded commit identity (`dev/d2-debug.log`).
+    - **Review** (relayed). APPROVE after two rounds.
+    - **Process slip.** One self-reported, harmless `git restore --source=HEAD` on the worker's own scratch file.
+  - **Gate-plan rule (from the coordinator).**
+    - **The rule.** Every commit's gate includes a Debug build, with 0 errors and a warning set no larger than the base's, not only at the tip.
+    - **Why.** The analyzers that fail the build run in Debug only, as the CA1034 slip showed, and CI's `dotnet test` builds Debug. (The second half is wrong; B32 corrects it.)
+    - **Scope.** It applies to the rest of 27a, to SQL Server, and to the final linear replay. It was not in force for the isolation and collation parts.
+  - **Closed by 27a:**
+    - B30 findings 1 to 3;
+    - B28 follow-up 7;
+    - B20's fingerprint, assembly-switch and `OfflineContexts` follow-ups.
+  - **Open: FolderDelete is being made deterministic.**
+    - **The problem.** The row catches a removed `ParentId` pre-clear only by chance. The first failure came on run 2 on MySQL and run 7 on MariaDB (`/tmp/27a-kit/red/folderdelete-summary.tsv`), and runs 1 to 6 passed on MariaDB with the break in place.
+    - **The work.** It is on `multidb/27a-folderdelete-deterministic` (`09c0b6d72e`). The row will be proven by a single-run break that fails 10 of 10 times on both servers.
+    - **Order.** It lands before the analyzer rule merges. Not fixed yet.
+  - **Other open 27a follow-ups:**
+    - the dedicated analyzer rule for the database ban, closing the hole the 20 file-wide `RS0030` disables leave (B28 follow-up 1);
+    - complex-type properties in `TextCollationConvention`;
+    - the views filter in `MySqlMigratedCollationTests`;
+    - the `OldAnnotation` charset;
+    - the null-tables check, which is server-only now;
+    - `[`, which is tested only through `LikeIgnoreAsciiCase`;
+    - the hand-built `%term%` at `TranslateQuery.cs:270` (pre-existing);
+    - PostgreSQL's transitive `CASCADE` against the purge contract (B28 F4);
+    - the nullable `tableNames` parameter;
+    - the inline server-version choice in `MySqlFamilyServer` and `MySqlTransactionIsolationTests`;
+    - the engine switches in `StartOverTests` and `AddNormalisedMatchColumnsMigrationTests`.
+
+## Amendments (step 27a closed, 2026-10-16)
+
+- **B32. Step 27a: FolderDelete made deterministic and the dedicated ban rule; 27a's planned scope is complete.**
+  - Details and evidence paths are in [the 27a explainer](explainers/27a-mysql-family-hardening.md), sections 4 and 5.
+  - The orchestrator fast-forwarded both parts into `feature/multi-db`.
+  - **FolderDelete** (`/tmp/27a-fd`).
+    - **Commits.** The worker's commit `09c0b6d72e` was cherry-picked onto `2c95aa2622` as `2f1f16c85f`. Outside the two 27a docs files the trees are byte-identical (same non-docs tree hash and patch-id). Every after-fix run used `09c0b6d72e`; red-old and the Debug base used `a6cd869ce7`; no run used `2f1f16c85f`.
+    - **Cause, by source.**
+      - The commit body says the deletes follow "the order of their key", catching the break "about one run in four".
+      - Key order is Guid byte order, because MySQL and MariaDB store `binary(16)` big-endian (ADR-0007, `:85`).
+      - The simulation `/tmp/27a-fd/scratch/sim.py` gives 0.265 per run.
+      - The old row failed 3 of 20 runs.
+    - **The fix, kit only.** A shared random prefix with the last byte set to the depth, and a guard that reads the ids back with `ORDER BY Id` on every engine. There was no production bug.
+    - **Results.**
+      - With the pre-clear removed, the new row fails 10/10 on MySQL 8.4.11 and 10/10 on MariaDB 11.4.13; the old row failed 1/10 and 2/10.
+      - Descending ids with the break pass 20/20.
+      - The guard fires on all 4 engines, and green is 40/40.
+    - **Proof and gates.** Proof: 11,454 passed, 609 skipped. Per-commit gates 15/15. Debug 211/211, empty diff.
+    - This closes the B31 FolderDelete item.
+  - **The dedicated ban rule** (`1d22afd2b3`, `a142db1590`, on `2f1f16c85f`; `/tmp/27a-ban`).
+    - **The rules.** JF0002 reports the ban. JF0003 reports list entries that do not resolve, only when the containing type resolves.
+    - **The list and suppressions.** The list is renamed `DatabaseBannedSymbols.txt`, so `RS0030` no longer reads it. The 7 suppressions move to JF0002 with their reasons. `MigrateLibraryDb` stays `RS0030` because it covers a Guid operator. This closes B28 follow-up 1 and the hole the 20 file-wide disables left.
+    - **The guard, `DatabaseBanSuppressionTests`.** It covers:
+      - JF0002 and JF0003 only on `#pragma` lines in production `.cs`;
+      - only the root props wiring the rule, with nested props importing their parent;
+      - the 4 pinned bare-disable files free of banned members;
+      - no analyzer switch-off in workflows or `.rsp` files;
+      - no configuration, property or `Configuration` environment for the ABI-head build of `Jellyfin.Server`.
+    - **The canary.** `CheckDatabaseBanIsInEffect` is a Debug build-time check.
+      - It ran in the 22 in-scope projects that were built.
+      - By the path rule 24 are in scope. The other 2 are the `fuzz/*.Fuzz.csproj` projects, which are not in `Jellyfin.sln` and not built by CI, though the guard's source scan covers their files.
+    - **Real metadata.** 23 of the 25 entries resolve; the 2 SQL Server ones are absent.
+    - **Negative controls.**
+      - **N1, the headline.** Raw SQL in `ItemPersistenceService` under a file-wide `RS0030` disable is silent at the base and fails as JF0002 at (70,26) at the tip.
+      - N2 (scoped disable), N3 (test project) and N4 (provider) are silent.
+      - N5: the environment variable has no effect.
+      - N6: 23 JF0002, 0 RS0030.
+      - N7 and N8: the canary errors.
+      - N9: a nested props file without the import is silent at build; only guard g10 catches it.
+      - N10 and N11: `NoWarn` and `RunAnalyzers` from the environment fire the canary, in dependency projects.
+      - N12: `ImportDirectoryBuildProps=false` from the environment is silent, a limitation documented in `src/Jellyfin.Database/readme.md:169-174`.
+      - The first runner was invalid (a MimeTypes `.pp` rebuild artefact) and is kept in `/tmp/27a-ban/invalid` with `WHY.txt`.
+    - **Red mutations.** m1 to m7 and g1 to g15 each fail as intended.
+    - **Proof.** 13 TRX files, 12,101 rows: 11,492 passed, 609 skipped. That is the 12 database legs (11,474 passed) plus the analyzer tests (18/18), recounted by me and independently by the orchestrator.
+    - **Gates.** Per-commit gates include Release, Debug (211 = base) and format. The base-against-tip Debug comparison is `/tmp/27a-ban/debug/`, on `2f1f16c85f`; `debug-base/` was built on `a6cd869ce7`, with a byte-identical warning set.
+    - **Evidence naming.** `delta-backup-c-to-tip.diff` is misnamed: it is `e675334d7c..db0e73703e`, backup-c to backup-d.
+    - **Release tracking.** JF0002 and JF0003 went straight into `AnalyzerReleases.Shipped.md` under Release 1.1; there is no Unshipped file.
+    - **Review** (relayed). Approved over three rounds. Folded in: S1 (guard bypasses), S2 (a narrowed unresolved-id check), and the coordinator's workflow scan and ABI-head check.
+  - **Correction to the gate-plan rule's reason (B31).** The rule stands: every commit is built in Debug, because the analyzers that fail the build run only in Debug.
+    - **CI builds Release.** CI's test and database jobs build Release (`ci-tests.yml:31`, `ci-tests-db.yml:85`), not Debug.
+    - **Where CI runs the analyzers.** CI enforces the Debug-only analyzers only through the ABI job's `dotnet build Jellyfin.Server` (`ci-compat.yml:26`), on pull requests.
+  - **Relayed CI.** Read-only by the orchestrator: green at `a6cd869ce7` and at `2f1f16c85f`, every database job included.
+  - **For the owner's list (with B17's question about the PostgreSQL leg):**
+    - **The ABI job upstream.** Whether jellyfin/jellyfin makes its ABI job a required check, since that job is what enforces the Debug-only analyzers. This is a decision for the final upstream PR.
+    - **Not a fork question.** The fork's `master` has no branch protection, as expected for a CI runner (relayed from the coordinator).
+    - **Fuzz projects.** They are outside CI; a note only.
+  - **27a status.**
+    - **Done:** isolation, collation, kit and `EngineTraits`, the flavour sentinel, the `[` escape, the purge contract, FolderDelete determinism, and the dedicated ban rule. 27a's planned scope is complete.
+    - **Next:** SQL Server (ADR-0001 E2-E3).
+    - **Open follow-ups:**
+      - the MySQL purge test classes (the slim `MySqlPurgeDatabaseArgumentTests` is kept by agreement);
+      - complex-type properties in `TextCollationConvention`;
+      - the views filter;
+      - the `OldAnnotation` charset;
+      - null tables checked server-side only;
+      - `[` covered only through `LikeIgnoreAsciiCase`;
+      - `TranslateQuery.cs:270`;
+      - PostgreSQL's transitive `CASCADE`;
+      - the nullable `tableNames`;
+      - the inline server-version choice;
+      - the engine switches in `StartOverTests` and `AddNormalisedMatchColumnsMigrationTests`;
+      - analyzer coverage gaps (operators, `typeof`, type-level bans);
+      - JF0002 and JF0003 placed straight into Shipped.
+
+## Amendments (SQL Server spike, 2026-10-16)
+
+- **B33. The SQL Server spike (ADR-0001 E3) and the brief for steps 27 and 28.**
+  - Details, the full hazard checklist and evidence paths are in [the spike explainer](explainers/sqlserver-spike.md). The text-class index question is [ADR-0012](0012-sqlserver-text-index-keys.md), Accepted (B34).
+  - **The spike.**
+    - **Branch.** `spike/sqlserver`, not for merge: `310c4522af` (the conventions-only stub), `a9f63bf1e1` (probes) and `c0b4bcc44b` (the hooks the first run asked for).
+    - **Base.** The branch was cut from `a142db1590` and rebased onto the docs-only `8845731f10`.
+    - **Gates.** Every commit: Release 0/0, Debug 0 errors with 211 warnings (the base's set, unchanged), and the exact format command. Debug caught a CA2213 that Release did not.
+  - **Results.**
+    - **The stub on SQL Server 2022 CU27** (16.0.4295.3): Implementations 2464 passed, 86 failed, 144 skipped; Server 126 / 9 / 30; Integration 140 / 0 / 8. The server starts, migrates a throwaway baseline and serves every integration test.
+    - **The stub on 2025 CU9 + GDR** (17.0.5015.4), at `a9f63bf1e1`, is the same stub plus 7 probe tests: 85 failures (86 − 4 + 2 + 1).
+      - The order-dependent `ManyServiceProvidersCreatedWarning` moved from four tests to two.
+      - One probe, `Sessions_*`, failed with its own catalog-collation conflict, identically on 2022. It was fixed in `c0b4bcc44b`.
+      - No behavioural difference between 2022 and 2025 was found (explainer).
+    - **With the hooks** (`c0b4bcc44b`):
+      - **2022:** Implementations 2544 / 5 / 156; Server 126 / 0 / 39; Integration 140 / 0 / 8.
+      - **2025:** 2539 / 10 / 156; 126 / 0 / 39; 140 / 0 / 8.
+      - **The one real failure left** is the kit's model-shape row, which needs the allowances below.
+      - **The rest** is EF's process-wide `ManyServiceProvidersCreatedWarning`, which lands on different tests from run to run; its cause is open (explainer).
+    - **The four existing engines at `c0b4bcc44b`:** 12 legs, 12,123 rows; 11,482 passed, 641 skipped, 0 failed; every sentinel passed. The stub does not regress SQLite, PostgreSQL, MySQL or MariaDB.
+    - **Model creation without the conventions** gives Msg 1785 (both cascades), Msg 156 (the OR filter) and Msg 1919 (`nvarchar(max)` in a key), the same on both versions.
+  - **The checklist in brief** (31 items):
+    - **Works:** Guid order and lists; `QUOTED_IDENTIFIER`; unique NULLs (M6); `LIKE` with `[`; DateTime range in `datetime2(7)`; 2100 parameters (EF falls back to one `OPENJSON` parameter; 100,000 ids pass); reseed with the `last_value` rule; transactional DDL; DatePlayed and `MAX` over a union; raw SQL in shared code; session defaults.
+    - **Needs a convention:** `NoAction` cascades (M5); the OR filter (M3); `nvarchar(4000)` for the text class; `nvarchar(max)` for bounded text outside keys and indexes.
+    - **Needs a hook:** `IDENTITY_INSERT`; the retry classifier; `LikeIgnoreAsciiCase` through `TRANSLATE`; a READ COMMITTED connection, because pooled connections keep their level; and a `datetime2` constant for `DATEADD`, because EF's untyped literal is `datetime` and year 1 fails the PremiereDate sort (Msg 517).
+    - **Known gaps:** ADR-0006 G1 and G2, neither of which any suite test covers yet; `ADR-0009/G2` (ADR-0012); the sort-name range filters with a non-ASCII term (MySQL's lists, exactly).
+    - **Test side:** `COUNT(*)` read as `long`; bracket quoting in a failed-write interceptor; the overlong-key seeds; the model-shape allowance; EF's process-wide service-provider warning.
+    - **One shared-code issue: the batch.** A folder's new items are saved in one transaction (`ItemPersistenceService.SaveItemTuples`). One over-long row saves none of them, and the scan then skips that folder's subfolders, on every pass. Measured: 0 of 50 saved on SQL Server, PostgreSQL (ADR-0009 G1, a Supported engine) and SQLite (a trigger raising an error); 50 of 50 on MySQL. ADR-0012 weighs the remedies; X11 below is the accepted one (B34).
+  - **Corrections to record in step 27:**
+    - **ADR-0007 G1.** `MIN` over `uniqueidentifier` exists on 2022 CU27 and 2025; its order is the problem, and `binary(16)` stays.
+    - **ADR-0008 R3.** On SQL Server, as on MySQL (S5), the provider must start transactions at READ COMMITTED itself.
+  - **SQL Server 2025.** `2025-CU9-GDR1-ubuntu-24.04` (`sha256:742481d1…ffbab2`) is GA since 18 November 2025, with mainstream support to 7 January 2031. Sources and the full comparison are in the explainer. 2022 stays the floor.
+  - **Relayed CI.** Read-only by the orchestrator: green at `a142db1590`, the JF0002 rule. That covers ABI - HEAD (the Debug build that enforces JF0002 in CI), all five database jobs, tests, format, OpenAPI and CodeQL.
+  - **Brief for step 27** (`multidb/27-sqlserver-provider`; not registered).
+    - **Packages.**
+      - `Microsoft.EntityFrameworkCore.SqlServer` at the EF version, and `Testcontainers.MsSql` 4.16.0, both central.
+      - Pin `System.Security.Cryptography.Pkcs` 10.0.13, because SqlClient 6.1.6 brings 9.0.11, flagged NU1902 and NU1903.
+      - Review SqlClient's Azure dependency tree as ADR-0011 R1 did for MySQL.
+      - Its reviewer runs `dotnet list package --vulnerable --include-transitive` at the tip. The spike's run is clean for the provider project at the spike tip (`evidence/vulnerable-packages-tip.txt`); the reviewer covers the whole solution.
+      - Test image `mcr.microsoft.com/mssql/server:2022-CU27-GDR1-ubuntu-22.04`, the security update of CU27 and the tag `2022-latest` points at. Its digest, `sha256:cf8f0ab2ebe61feec2eed2629061a07d247f791c2a8ddda74a4ac9f06a291718`, was read from MCR on 2026-10-16. The spike ran on the pre-GDR `2022-CU27-ubuntu-22.04` (`sha256:4402d880…a090`), so step 27 runs the suite on the GDR image before pinning it.
+    - **Conventions, each with a model test.**
+      - `binary(16)` Guids through `ToByteArray(bigEndian: true)` (ADR-0007 P2).
+      - `Latin1_General_100_BIN2` on every column stored as text, chosen by store type as C8 does. The history repository gets BIN2 too. There is a startup check of the database default collation, which warns, and no `ALTER DATABASE … COLLATE` in the baseline.
+      - `nvarchar(4000)` for the text class, with ADR-0012's budget test.
+      - `nvarchar(max)` for bounded text outside keys and indexes.
+      - Only the OR filter dropped.
+      - `NoAction` on `BaseItems.ParentId` and `AncestorIds.ParentItemId`.
+      - `IdentifierLengthConvention(128)`.
+    - **Members and EF hooks.**
+      - **Retry classifier.** `IsRetryableWriteConflict` with 2627, 2601, 1205, 1222 and 3960; 547, 2628, 8152 and 1946 are not retryable.
+      - **Explicit identities.** `BeginExplicitIdentityInsertAsync` with `SET IDENTITY_INSERT` per table, on the open connection.
+      - **Purge.** Constraints off, `DELETE`, `WITH CHECK CHECK CONSTRAINT ALL`, then `RESEED 0` only where `last_value IS NOT NULL`, inside and outside a transaction.
+      - **Isolation.** SqlClient keeps a pooled connection's level: measured with SERIALIZABLE on both versions.
+        - `ReadCommittedConnection`, which replaces `ISqlServerConnection` (EF1001, as MySQL's replaces `IMySqlRelationalConnection`), turns an unnamed level into READ COMMITTED. That covers EF's transactions and saves only: a statement outside a transaction on a reused connection still ran SERIALIZABLE (`probes-c3-*`).
+        - The provider therefore also sets READ COMMITTED when a connection opens, as the MySQL session interceptor does.
+        - The RCSI warning at `Initialise` (ADR-0008 R3), and the ADR-0008 amendment that records the leak and both remedies.
+      - **Startup checks** that read `sys.databases` or `DATABASEPROPERTYEX` read single scalars, or apply `COLLATE DATABASE_DEFAULT` when they combine or compare catalog string columns. A `CONCAT` over `sys.databases` columns failed with a collation conflict in the spike's own probe.
+      - **`LikeIgnoreAsciiCase`.** Translated as `TRANSLATE(value, 'A…Z', 'a…z') LIKE pattern ESCAPE '\'` (R13).
+      - **`DATEADD` over a constant.** An `IMethodCallTranslatorPlugin`, added through an options extension with scoped lifetime, so that `DateTime.AddYears` on a constant uses a `datetime2` literal. Check the other `DATEADD` members the same way.
+      - **Compatibility level.** EF assumes 150; pin it explicitly, and run the suite at 160 before choosing it.
+      - **Server floor.** Refuse a server older than 2022 at `Initialise`.
+      - **Experimental warning.** Once per database, with the password removed from logged connection strings.
+      - **Backups and statistics.** `MigrationBackupFast` stays empty with a warning, as MySQL's does (F5); `RefreshStatistics` runs `UPDATE STATISTICS`.
+    - **Test side.**
+      - **`EngineTraits`.**
+        - A row for SQL Server.
+        - A capability for "key-class columns enforce their bound", replacing the provider lists in `EnforceKeyLengthsTests` and `NormalizeOverlongKeysTests`.
+        - A count statement in `PoolStatements`.
+        - A foreign-key switch-off that is DDL, because SQL Server has no session switch for it.
+        - The integration factory's database-name and connect switches.
+      - **Model-conformance allowances**, replacing the single `SupportsPartialIndexes`:
+        - `UnexpressibleIndexFilters`: the exact filter texts an engine keeps as a non-unique index without its filter. For SQL Server the OR filter; for the MySQL family all of them.
+        - `NoActionCascades`: (table, columns) pairs stored as `NoAction` instead of `Cascade`.
+        - **Guards, in the 27a style.** Each entry must exist in the reference model, on a non-unique index or as a cascade, so the allowance is not vacuous. The actual model must differ exactly there. Every other difference still fails. An engine with `NoActionCascades` must be enrolled in the FolderDelete row.
+      - **Other test fixes.**
+        - Enrol SQL Server in `SelectedBackendPoolTests`, `FixtureSeamTests`, `StartOverTests` and `ItemPersistenceWriteConflictTests`.
+        - Match the table of the failed-write interceptor through `ISqlGenerationHelper`.
+        - Let the offline model tests ignore `ManyServiceProvidersCreatedWarning`, which they cause by design.
+    - **Red-first tests, one or more per hazard**, each failing on the stub before its fix:
+
+      | Hazard | Red test |
+      |---|---|
+      | Cascades | FolderDelete row and the model test of `NoAction` (Msg 1785 without it) |
+      | OR filter | Model test of the three kept filters and the one dropped (Msg 156 without it) |
+      | `QUOTED_IDENTIFIER` | Session test, `quoted_identifier = 1` |
+      | Unique NULLs | M6 model test of the `[UserId] IS NOT NULL` filter |
+      | Text keys | ADR-0012 tests 1, 2, 5 and, if (b) is taken, 6 |
+      | Unindexed text | `TextColumnLengthTests` (Msg 2628 on the stub) |
+      | Guid order | ADR-0007 test 1 and a store-type test of every Guid column |
+      | `LikeIgnoreAsciiCase` | `LikeIgnoreAsciiCaseBehaviourTests`, the Like kit rows, `BaseItemRepositorySortNameFilterTests` (26 red on the stub) |
+      | Range filters | The ledger entry, matched only by MySQL's lists |
+      | Trailing spaces | New: `ItemValues` `Rock` and `Rock␠`, both stored and one found by equality; `KnownGap` `ADR-0006/G1` on SQL Server |
+      | UTF-16 order | New: an order test with U+E000, U+FFFD and U+1F600; `KnownGap` `ADR-0006/G2` |
+      | `DATEADD` literal | `BaseItemRepositoryPremiereDateOrderTests` with year 1 (Msg 517 on the stub) |
+      | Identity insert | `BackupServiceTests` and the Restore kit rows (Msg 544 on the stub) |
+      | Reseed | A test that a never-used table's first id after the purge is 1 (0 with an unconditional `RESEED 0`) |
+      | Isolation | Leave a pooled connection at SERIALIZABLE, then assert that an EF transaction, a save **and an untransacted EF query** on the reused connection run at READ COMMITTED (the session's `transaction_isolation_level` read inside the same command batch); the RCSI warning with RCSI off |
+      | Batch save | ADR-0012 test 3: N new children of one folder, one over-long; the behaviour pinned per engine |
+      | Restore | ADR-0012 test 4, red first: a restore that meets an over-long row rolls back as a whole |
+      | Retry | The WriteConflict kit rows, and classifier unit tests with real `SqlException`s of the measured numbers |
+      | 2100 parameters | The IdList kit rows (already green) |
+      | Collation | Every text column BIN2, in the model and in the migrated schema; a database with another default gives the warning |
+      | Compatibility level | The options name the pinned level |
+  - **Coordinator decisions for step 27.**
+    - **First item, before any hazard work.** Root-cause the order-dependent `ManyServiceProvidersCreatedWarning`. A test-only suppression is acceptable only once the cause is understood and shown harmless.
+    - **Isolation.** SQL Server gets the READ COMMITTED connection fix, including the reset for statements outside a transaction, and the ADR-0008 amendment.
+    - **CI.** An advisory 2025 job alongside the 2022 job; neither is required.
+    - **Restore.** The claim that a restore rolls back as a whole becomes a red test in step 27, not later.
+  - **X11, save item by item after a failed batch** (ADR-0012 option (S); accepted, B34).
+    - **Shape.** An independent unit cut from `upstream/master`, like the other X rows: `fix/save-items-per-item-fallback`. It is not part of the SQL Server steps, and it is reviewed on its own.
+    - **The change.** When `ItemPersistenceService.SaveItems` fails on a batch of more than one item with an error of a row or of its data, it saves the items one at a time, each in its own transaction, in list order. It skips an item whose primary or owner failed, and logs each skipped item at Error with its id, path and exception.
+    - **The trigger, exactly.** A `DbUpdateException` whose innermost `DbException` has `IsTransient == false` and is not a retryable write conflict for the provider. Connection failures, command time-outs (`TimeoutException`, SqlClient −2), transport and I/O errors, cancellation, and anything that is not a `DbUpdateException` never trigger it, and are rethrown as today.
+    - **Stop early.** If the first K per-item saves fail with the same exception type and provider error number, the fallback rethrows. The proposed default is K = 3, fixed in the step's design.
+    - **What it still loses.** An over-long folder's children fail alike, so the stop-early rule rethrows and that folder's subtree is lost; sibling folders are not affected.
+    - **Failing-first tests on every engine**, with a deliberately failing row:
+      - SQLite and MySQL/MariaDB: a trigger;
+      - PostgreSQL: a path over 2704 bytes (`54000`), or a trigger;
+      - SQL Server: once it is registered.
+
+      Each asserts that the other items are saved, the failing one is logged, and a connection-level error is not retried per item. A scan-level test asserts that the folder's subfolders are still validated.
+    - **Order.** It is independent of steps 27 and 28. It should be merged into `feature/multi-db` before SQL Server is registered (step 28). If it is not accepted, step 27 takes ADR-0012 (b) for `Path` and (i) instead.
+    - **Upstream.** It is a candidate for the upstream series. It changes no query and no schema, and it removes a folder-wide failure that PostgreSQL, a Supported engine, already has.
+  - **Brief for step 28** (`multidb/28-sqlserver-migrations-and-registration`).
+    - **Baseline.** `20200101000000_InitialCreate`, generated with the one command (W1, W3) from a fixed design-time factory.
+      - It holds the 18 indexes over 1700 bytes; their Msg 1945 warnings are expected (ADR-0012).
+      - It sets no database collation.
+      - `CoversThroughSqliteMigration` names the newest SQLite migration at the time.
+    - **Registration.** `Jellyfin-SqlServer` in `DatabaseProviderTypes()`, with the Experimental warning (M1).
+    - **Migration tests (a) to (c)**, the 22c contents check with SQL Server's allowlist entries, and the failing-migration test. DDL is transactional, so `SupportsTransactionalMigrations` stays `true` and no marker is needed.
+  - **Step 29.**
+    - **Floor entry.** A `SqlServer` entry on 2022 CU27 GDR1, pinned by digest and not required (ADR-0010 CI3).
+    - **An advisory entry**, decided by the coordinator, for `2025-CU9-GDR1-ubuntu-24.04` (`sha256:742481d1b1186cccc81220a1eaacef244ca8d0f7d19c8e5c70df8ae541ffbab2`), as MySQL 9.7.2 and MariaDB 12.3.3 are. Its failure would not fail the run. 2025 is GA with mainstream support to 2031; the spike found no behavioural difference; and new databases at compatibility level 170 are where a later EF default would first differ.
+    - **The how-to** says plainly that an item whose path is longer than about 850 characters is not saved on SQL Server, and what that does to the rest of its folder (ADR-0012, decision 7).
+
+## Amendments (ADR-0012 accepted, 2026-10-16)
+
+- **B34. ADR-0012 is accepted, and follow-up X12 is added.**
+  - **Decision.** Taken by the orchestrator, with the coordinator agreeing, after independent review of the docs commits on `docs/sqlserver-spike`:
+    - storage is ADR-0012 (a): `nvarchar(4000)` for the text-class columns, with the known gap `ADR-0009/G2`;
+    - the blast radius is limited by (S), the independent shared step X11 (`fix/save-items-per-item-fallback`), cut from `upstream/master` and merged into `feature/multi-db` before step 28;
+    - (b) for `Path` plus the pre-save check (i) applies only if X11 is rejected.
+  - **Review leftovers folded in.**
+    - X11's trigger is exact: non-transient row or data errors only, with an explicit list of what never triggers it, and stop-early at K = 3 proposed.
+    - (S) can still lose an over-long folder's subtree.
+    - Under (b) and (i), the folder-wide mode stays for the other 11 text-class columns.
+    - `Folder.cs:610`.
+    - Server versions in the batch measurement are inferred.
+    - The package scan covers the provider project only.
+    - The cause of the missing `end-identity.txt` is stated as possible, not certain.
+  - **X12 (follow-up, after X11): PostgreSQL text-class index keys over 2704 bytes.**
+    - **The gap.** On PostgreSQL, a Supported engine, an item whose `Path` index key exceeds 2704 bytes never saves, while SQLite saves it (ADR-0009 G1; measured `54000` at 3024 bytes). X11 limits it to that item but does not close it. X11 pins it: the long-`Path` row of the conformance kit (`BatchSaveConformance.SaveItemsSkippingFailures_OneItemWithAPathOverTheIndexKeyLimit_SavesEveryItem`), marked with the known gap `PG-PATH-INDEX-KEY`, whose matcher accepts only `54000` on `IX_BaseItems_Path`. That row is the pinning test that ADR-0009 L7 asked for. ADR-0009's `BaseItem_PathOver2704Bytes` was not found (ADR-0009 L7, ADR-0012 decision 8).
+    - **First, the query shapes on `Path`.** The spike found equality (`TranslateQuery.cs:330`) and membership (`ItemPersistenceService.cs:612,698`) in the database layer, and no prefix or LIKE. X12 checks every caller before choosing.
+    - **Then weigh, for equality and membership:**
+      - a PostgreSQL `USING hash` index on `Path`, which has no 2704-byte limit;
+      - an expression index on `md5("Path")` with the predicate rewritten to use it.
+      - Say what a prefix or LIKE query would need if one exists.
+    - **Confirm MySQL.** Its index-prefix behaviour (50 of 50 saved with a 909-character path) must match ADR-0009 L6, with `SHOW INDEX` showing an explicit `Sub_part`.
+    - **Tests.** The pinning test exists: X11's long-`Path` kit row asserts that a `Path` over 2704 bytes saves on every engine, and it is skipped on PostgreSQL only by `PG-PATH-INDEX-KEY`. X12 removes that `KnownGaps` entry. The marker forces this, because it fails the row once PostgreSQL saves the path. The other text-class columns are listed with their status.
+    - **Order.** After X11, and in the plan before the final replay (B31). It goes into the owner's final report.
+
+## Amendments (X11 design, 2026-10-16)
+
+- **B35. X11's design is settled, and its trigger is corrected.**
+  - **Correction to B33 and B34.** X11's trigger rested on `DbException.IsTransient`, which Microsoft.Data.Sqlite 10.0.12 and Microsoft.Data.SqlClient 6.1.6 never set. MySqlConnector 2.6.2 leaves it `false` for a command time-out. The details and the evidence are in ADR-0012 T1.
+  - **The design**, approved by the coordinator, is ADR-0012 T2 to T4:
+    - the provider member `IsDataError`, `false` by default, with the classifiers in the providers;
+    - the opt-in `IItemPersistenceService.SaveItemsSkippingFailures`, used only by `LibraryManager.CreateItems` and `UpdateItemsAsync`, which cache and announce only the items saved;
+    - `ILibraryManager.CreateItemsSkippingFailures`, which tells the folder scan which new items were left out, so that it does not act on them;
+    - the units over `ParentId` and `OwnerId`;
+    - stop-early at K = 3;
+    - the nothing-saved rule.
+  - **The shape.**
+    - The upstream-shaped `fix/save-items-per-item-fallback` has two commits on `aec42b345e`: the provider member with its SQLite classifier, then the fallback.
+    - The fork candidate `multidb/x11-merge-candidate` cherry-picks both and adds one fork-only commit: the PostgreSQL and MySQL/MariaDB classifiers, and a conformance-kit row on all four engines.
+  - **Step 27 brief, addition.** The SQL Server provider implements `IsDataError`. Without it, X11 does nothing on SQL Server, and ADR-0012 decision 7's "with (S)" wording does not hold.
+    - **Candidate numbers:** 1946 (index key over 1700 bytes), 547 (constraint), 2601 and 2627 (duplicate key), 2628 and 8152 (string truncated), 515 (NULL), 8115 (arithmetic overflow), 245 and 8114 (conversion), and the user errors 50000 and up that THROW or RAISERROR raise in a trigger.
+    - **Each is pinned** by a classification test against a real refusal on the pooled backend.
+    - **Never a data error:** −2 (time-out), 1205 (deadlock, which the retry handles) and the transport errors.
+  - **CI.** At `5717472263`, the SQL Server spike docs, every job was green. The orchestrator checked the check runs read-only with `gh` and relayed the result.
+  - **PostgreSQL's pin.** X11's long-`Path` kit row pins ADR-0009 G1 as the known gap `PG-PATH-INDEX-KEY`, asserting `54000`. That is the pinning test of ADR-0009 L7, and X12 removes the gap (B34).
+  - **Follow-up note.** When a file changes type, the scan deletes the stale item at its path before `CreateItems` (`Folder.cs`, the type-change branch). So a replacement that the database refuses still leaves that path empty until a scan saves it. The base behaves the same, and X11 does not change it.
+  - **Wording.** The S9 rows for X1 to X3, X6 to X8 and X10, and S10, now say where each fix lives: on `feature/multi-db`, plus its upstream-shaped branch. They also say that whether it ships inside the single PR or separately is decided at submission time. The historical amendments are unchanged.
+
+## Amendments (X12, 2026-10-16)
+
+- **B36. X12 is done: `IX_BaseItems_Path` is a hash index on PostgreSQL.** The details are in ADR-0009 L8 and L9, ADR-0012 T6 and [the X12 explainer](explainers/x12-pg-path-hash-index.md).
+  - **Decision.** The orchestrator approved the hash index (h1) over an `md5` expression index (h2) after receiving the query-shape inventory and the measured comparison. h2 would need a shared query rewrite or an interceptor. A `hashtext` variant was rejected unmeasured, because `hashtext` is internal and undocumented.
+  - **Branch.** `multidb/x12-pg-path-key`, cut from `93c7ffec57`, in two commits:
+    - *Index item paths with a hash index on PostgreSQL*: the convention, the null-order convention's skip of non-btree indexes, the paired migration `20261016043615_IndexItemPathByHash`, four `EngineSpecific` allowlist entries, the removal of `PG-PATH-INDEX-KEY`, the MySQL prefix pins, and the tests;
+    - a docs commit, which also adds the upgrade note to the PostgreSQL how-to.
+    - The first round, before the independent review's fixes, is `multidb/x12-pg-path-key-backup-a` (`bbe7c929d9`, `3318c797f0`).
+  - **Migration shape, approved.**
+    - PostgreSQL drops and recreates the index.
+    - SQLite and MySQL carry the id with no operations, and a one-line comment, because the 22b pairing rule requires every id on every provider.
+    - The SQLite and MySQL snapshots are byte-identical to the base; the PostgreSQL snapshot changes only the index method.
+  - **Replay (B31).** PostgreSQL ships in the upstream series, so X12 is a candidate to fold into it:
+    - the convention goes into step 14 (`NullsFirstIndexConvention` with its non-btree skip);
+    - step 15's regenerated PostgreSQL baseline then creates `IX_BaseItems_Path USING hash` from the start;
+    - `20261016043615_IndexItemPathByHash` (all three providers) and its four allowlist entries are dropped from the series, together with this commit's migration tests. The kit rows, `PostgresPathIndexTests` and the convention test move with the convention.
+    - The fork keeps the paired migration until then, because existing fork databases need it.
+  - **Red first** (`/tmp/x12/red2/legs/`):
+    - (a) and (d): at the base with the kit rows of the fix and no marker, PostgreSQL fails both long-path rows with `54000`, and the other engines pass;
+    - (b): the fix with the marker put back fails on PostgreSQL with "remove the KnownGap marker";
+    - (c): the fix passes on all four engines;
+    - removing one allowlist entry makes the contents check report one missing entry, and restoring it passes;
+    - (f): with the MySQL prefix limit at 511, the offline prefix pin fails on all five MySQL and MariaDB rows with "Expected: [512] Actual: [511]", and passes again with the reverse patch applied.
+  - **Gates** (`/tmp/x12/gates2/`, each run finished with `COMPLETE`, 12G cap):
+    - per commit, for the code commit and the first docs commit: Release 0/0, format and render check returning 0, and the targeted tests green on all four engines;
+    - Debug of the base and both commits: 0 errors and the same 211 warnings;
+    - the tip proof on `c24fd58c40`: the full suites on all four engines plus Controller.Tests, with 12,461 TRX rows (11,774 passed, 687 skipped, 0 failed), every sentinel passing, nothing left in Docker, and a clean identity at both ends.
+    - The docs commit was then amended to quote these results, with docs-only changes. The numbers are in the explainer.
+  - **MySQL and MariaDB** match ADR-0009 L6: `Sub_part` 512, `BTREE`, and 909, 3024 and 10,000 characters all saved. An offline test pins the 512 prefix on `IX_BaseItems_Path` for every MySQL and MariaDB row of the provider table, red with the limit at 511. The existing server test that reads `SUB_PART` from `information_schema.STATISTICS` now asserts 512 for the path as well. Correction: X12's first round said that no test checks `SHOW INDEX`; that was wrong, because that server test already compared every prefix with the model.
+  - **Follow-up.** The other text-class indexes keep their PostgreSQL exposure (ADR-0009 L9). The recommended follow-up measures hash for the single-column ones and records the composites as a named gap.
+
+## Amendments (step 27, 2026-10-16)
+
+- **B37. Step 27: the SQL Server provider, not registered.** Branch `multidb/27-sqlserver-provider`, cut from `fc39749cf9`, the docs commit of X12 (B36); `git merge-base` with `feature/multi-db` gives that hash. The branch was on `93c7ffec57` earlier and was rebased onto `fc39749cf9` at 10:56 on 2026-10-16 (reflog). Evidence is under `/tmp/27/`.
+  - **The commits** (oldest first; commits 1 and 2 keep their hashes in every round; commits 3 to 9 have the hashes of the comment-only round below):
+    1. `c0886933d2` Keep the offline model tests out of EF Core's service provider cache.
+    2. `d7f5fe0b3e` Name in the traits of an engine exactly where its model may differ.
+    3. `db4884f8c0` Add a SQL Server database provider, not registered yet.
+    4. `314186a18d` Run the database tests on SQL Server.
+    5. `e205789a93` Pin the sessions and the startup checks of SQL Server.
+    6. `f07589f3eb` Classify the errors SQL Server really raises.
+    7. `3349e02100` Pin the identity columns of SQL Server around a purge and explicit ids.
+    8. `aac5628e4b` Pin keys over 1700 bytes on SQL Server as a known gap.
+    9. `d6d0951e9c` Pin trailing spaces and UTF-16 order on SQL Server as known gaps.
+    10. this docs commit.
+  - **Backups.** `multidb/27-sqlserver-provider-backup-a` to `-l` hold the earlier rounds.
+    - `-j` is `81777870a6`, the tip before the CA1823 fixup (below). Commits 1 to 5 did not change in that fixup, and the diff from `-j` to the tip was exactly 2 deleted lines.
+    - `-k` is `b9f6915197`, the tip before the rework (below). `-l` is `c12a641533`, the tip after the rework and before the comment-only round (below). `git range-diff fc39749cf9 b9f6915197 c12a641533` changes only commits 3 and 5.
+  - **Rework: `ReadCommittedConnection` removed.**
+    - **What the red controls found.** Independent red controls at `b9f6915197` removed `.ReplaceService<ISqlServerConnection, ReadCommittedConnection>()` from the provider, and no test turned red: control `isolation-connection`, NOT CAUGHT (`/tmp/27/red/final/results.json`).
+    - **Why.** A diagnostic on SqlClient 6.1.6, EF Core 10.0.12 and SQL Server 2022 CU27 (16.00.4305) showed that a transaction that names no level runs at READ COMMITTED (level 2) even when the session is at SERIALIZABLE (level 4). SqlClient names that level itself, not the server: `SqlInternalConnection.BeginSqlTransaction` changes `IsolationLevel.Unspecified` to `ReadCommitted` and sends it ([`SqlInternalConnection.cs`, tag v6.1.6, lines 239 to 242](https://github.com/dotnet/SqlClient/blob/v6.1.6/src/Microsoft.Data.SqlClient/src/Microsoft/Data/SqlClient/SqlInternalConnection.cs)). The `Iso -1` in the trace of the diagnostic is the value that `SqlConnection.BeginTransaction` was entered with, written before that change; the transaction reports `ReadCommitted` (`dbtx=ReadCommitted`). It held after a Serializable commit, after a bare `SET TRANSACTION ISOLATION LEVEL SERIALIZABLE`, on a pooled reopen of the same session still at 4, and in raw SqlClient without EF Core (`/tmp/27/fix/isolation/diag/diag.txt`). SQL Server 2025 CU9 agrees: the full SQL Server suites at `c12a641533` pass there (`/tmp/27/dev/s10-sql2025`; see the results). An earlier scratch run (`/tmp/27/fix/sql2025-confirm`) ran the session tests on an uncommitted tree at `b9f6915197` with 2 modified files, before the rework was committed.
+    - **The correction.** The spike measured only that the level of the session persists (`/tmp/sqlserver-spike/evidence/probes-2022/probes.txt`, lines 16 and 17). It never measured an unnamed transaction without the replacement. B33's isolation bullet implied, and the doc comment of `ReadCommittedConnection` at `b9f6915197` said, that SqlClient starts such a transaction at the level of the session, and that `ReadCommittedConnection` fixes it. That was an inference and it is wrong: SqlClient names READ COMMITTED for it. B33 is left as written, as a record; this bullet, ADR-0008 S7 and a note on row 21 of the spike explainer correct it.
+    - **Change, in commit 3** (`db4884f8c0`): `ReadCommittedConnection` is removed from the SQL Server provider with its two tests (the `IsType` assert, and the theory `Resolve_NamesReadCommittedForATransactionThatNamesNoLevel`, 4 rows). The EF1001 pragma in `SqlServerDatabaseProvider.cs` goes with it; `BinaryCollationHistoryRepository` keeps its own. The doc comment of `SessionSettingsInterceptor` says that SqlClient names read committed for such a transaction. MySQL's `ReadCommittedConnection` is unchanged: MySqlConnector names REPEATABLE READ there (B31, ADR-0008 S5).
+    - **Change, in commit 5** (`e205789a93`): two theories in `SqlServerSessionTestsBase`, run by `SqlServerSessionTests` and `SqlServerLockingReadsSessionTests`. After a transaction that named SERIALIZABLE on an open connection, committed or rolled back, the next transaction without a level and a save each run at READ COMMITTED. They pin what SqlClient sends for an unnamed transaction: if a later SqlClient started an unnamed transaction at the level of the session, they fail. The open-time `SET TRANSACTION ISOLATION LEVEL READ COMMITTED` of `SessionSettingsInterceptor` stays, for statements outside a transaction.
+    - **Scope.** `git diff b9f6915197 c12a641533 --name-only` lists 5 files, none a project or package file: `ReadCommittedConnection.cs`, `SessionSettingsInterceptor.cs` and `SqlServerDatabaseProvider.cs` of the provider, and `SqlServerDatabaseProviderTests.cs` and `SqlServerSessionTestsBase.cs`. The titles of the 9 commits are unchanged.
+    - **A comment-only round after the review** (backup `multidb/27-sqlserver-provider-backup-l` = `c12a641533`): the doc comment of `SessionSettingsInterceptor` and the comment on the new theories now say that SqlClient names READ COMMITTED; `git diff c12a641533 d6d0951e9c` changes comments only, so the full suites, red controls and the 2025 run at `c12a641533` stand for the tip.
+    - **Red controls, `/tmp/27/scripts/red.py`** (backups `red.py.bak-k` and `red.py.pre-rework`):
+      - `isolation-connection` is removed with its target.
+      - `identity-insert` now mutates the condition to `table is null || entityType is not null`. The first form, `if (true)`, did not build: CS0162, unreachable code.
+      - `registered` now adds both the `yield return` and the `ProjectReference`. The first form did not build: CS0234. Both build failures were in the first run at `b9f6915197`.
+      - There is no control for the unnamed-transaction behaviour, because no change to production code can change what SqlClient sends. The two new theories are the guard.
+  - **The order-dependent `ManyServiceProvidersCreatedWarning` (coordinator's first item).**
+    - **Cause.** EF Core caches one internal service provider per options configuration for the whole process and throws at the 21st (the warning defaults to Throw); a throwing build is not cached, so every later context of that configuration throws. A clean Implementations run already cached 19 on SQLite and on MySQL: one for the engine under test, 18 from offline model tests built with other options on purpose. SQL Server's own configuration, which no offline test shares, reached the limit, and 37 tests then failed with the warning in the spike's run (`/tmp/27/msp/root-cause.txt`).
+    - **Fix.** Those offline contexts build without the cache. A build without the cache is checked against the count but not added to it. `InternalServiceProviderTests` holds the selected engine's options to one service provider across databases and interceptors; in a short run it, not EF's limit, is the protection.
+    - **Proof.** In a scratch trace of the fix on the spike, the SQL Server run's cache held 9 configurations at exit (`/tmp/27/msp/r3`). In s10 no test failed on any engine (results below). Red controls, which finished:
+      - an uncached build after 20 cached ones throws, and 5 uncached builds leave the cache at 0 (`/tmp/27/msp/rc/out2`);
+      - a per-options leak fails the guard at `Assert.Same` on SQLite and on MySQL, and the guard is green as committed (`/tmp/27/red/guard/out-a0be45a105`; the guard test and both test backends are the same at that commit and at the tip).
+  - **CA1823.** g8, the per-commit gates, found that the Debug build of the old commits 6, 7 and 8 fails with CA1823: the unused constant `StatementTerminated` in `SqlServerErrorClassificationTests`. Release and format did not catch it, and commits 1 to 5 were not affected (`/tmp/27/gates/g8/results.tsv`). A fixup into commit 6 removed the constant and the commits after it were rebased; the tip went from `81777870a6` to `b9f6915197`, and from there to `c12a641533` in the rework.
+  - **The t3code restart.** `t3code.service` was restarted at 13:33:24 BST on 2026-10-16 (`journalctl --user`). That killed everything that ran inside it, including the runners of s7 and s8 and the orchestrator. g8 was cut off at commit 8 (its tests had not completed). Long runs now start with `systemd-run --user --unit=<name> --collect`, so they are not children of the service. The reruns run as the service `multidb-s9`, through `/tmp/27/dev/s9.sh`.
+  - **Incident: out of memory** (`/tmp/27/incident-oom.txt`).
+    - A scratch red control for the cache fix looped without bound. The first form of it set a new logger factory per context, which does not change the options key in EF Core 10.0.12.
+    - At 08:55:39 the kernel's OOM killer killed that scratch test process (about 31.7 GB of resident memory). It had started at 05:37:11 and held `/tmp/multidb-heavy.lock` for about 3h20m, which stalled X12's run1. At 09:00:15 the OOM killer killed the first rerun (about 31.1 GB). So two runs were killed.
+    - The loop was given a fixed count of 40 with an assertion, the key is varied through `ConfigureWarnings`, each step runs under a timeout, and `flock` waits with `-w`.
+    - Every build, format and test step in `/tmp/27/scripts` now runs under `systemd-run --user --scope -q -p MemoryMax=12G -p MemorySwapMax=0 --`, inside the flock and under a timeout. Each run records the cap in `cap.txt`. The cap was checked: it kills a 200 MB allocation under a 64 MB limit. The red controls of `/tmp/27/msp/rc/out2` ran before the cap rule, with the fixed count and the timeouts only.
+  - **The pessimistic-lock hang.**
+    - **Cause.** `SaveChanges_WithEachLockingBehaviour_RunsAtReadCommittedAndIsReadBack` (commit 5) saved asynchronously under `PessimisticLockBehavior`. That behaviour takes one static `ReaderWriterLockSlim` (`PessimisticLockBehavior.cs:43`) and holds it across an `await` (`OnSaveChangesAsync`, lines 64 to 70, and the async overrides of `TransactionLockingInterceptor`, lines 88 to 135). A `ReaderWriterLockSlim` belongs to a thread; the code after the `await` can run on another one. In a run that did not finish (`/tmp/27/dev/s5-sqlserver/SqlServer.log`; it is quoted for the cause only, not as a result) the release threw `SynchronizationLockException: The write lock is being released without being held`. The lock then stays held by the first thread, and the next writer waits for it without end.
+    - **Fix.** The test saves synchronously, and a comment says why.
+    - **Guard.** Every test step of the step's scripts passes `--blame-hang-timeout 15m --blame-hang-dump-type none`, so a stuck run ends after 15 minutes. No blame-hang output exists for s10 (`/tmp/27/tipcheck/s10-vs-x12.json`: no `Sequence_*.xml`).
+    - **Red control `pessimistic-async`** (in `/tmp/27/scripts/red.py`) turns the test back into an asynchronous one. It must turn `SaveChanges_WithEachLockingBehaviour` red on SQL Server. It was caught at `c12a641533` by the blame-hang message ("The specified inactivity time of 15 minutes has elapsed"), as intended (`/tmp/27/red/final-k/pessimistic-async-test.log`).
+    - **Finding: the control leaves its test host running.** After the 15-minute blame-hang ended the run, the test host stayed up, in both runs: the first at `/tmp/27/red/final` and the second at `/tmp/27/red/final-k`. The two systemd scopes ran 4h11m and 46 minutes in all, including the 15-minute timeout (`journalctl --user`: started 23:06:44 on 2026-10-16 and 02:31:40 on 2026-10-17). Each held its Testcontainers Ryuk session, so one SQL Server 2022 container stayed up per run. The orchestrator stopped the two scopes at 03:18:05 on 2026-10-17, and no Testcontainers container was left at 03:43:17 (`/tmp/27/fix2/docker-before.txt`). The container of the first run (Ryuk session `12626595`) was up throughout s10: it is in both of its docker lists, "Up 3 hours".
+  - **Production exposure.**
+    - **SQLite with `Pessimistic`: for the owner's upstream-notes list.** The same pattern is in the upstream code. `JellyfinDbContext.SaveChangesAsync` (`JellyfinDbContext.cs:276-292`) calls `OnSaveChangesAsync`, which holds the static lock across the `await`; `ServiceCollectionExtensions.cs:171-182` selects the behaviour from `database.xml`, and `NoLock` is the default (lines 122-127). Upstream already warns about it in `dd81e52f81`, "Add warning that PessimisticLockBehavior is unsafe", an ancestor of the base. The option to record is a `SemaphoreSlim`, which does not belong to a thread. Upstream decides.
+    - **PostgreSQL, MySQL/MariaDB and SQL Server:** planned: X13.
+  - **Model allowances.** `SupportsPartialIndexes` is replaced by three exact sets in `EngineTraits` (`ModelAllowances`): `UnexpressibleIndexFilters`, `NoActionCascades` and a third, `NullFilteredUniqueIndexes`, which the spike's checklist (row 26) did not list. On SQL Server EF Core filters the unique `IX_ImageInfos_UserId` to `[UserId] IS NOT NULL` so that it takes several NULLs (M6). Each entry must name what the SQLite model has and must be used; every other difference fails. SQL Server names one filter of the first kind (`PrimaryVersionFilter`), two keys of the second (`BaseItems.ParentId` and `AncestorIds.ParentItemId`) and the one index of the third. MySQL and MariaDB name four filters, and their models compare as before. SQLite and PostgreSQL name none.
+  - **The provider** (see the commits). Not registered: `Jellyfin.Server.Implementations` and `Jellyfin.Server` do not reference it, and two tests assert that the key is refused (`ProviderRegistrationTests` and `SqlServerDatabaseProviderTests`). Azure SQL Database, Managed Instance and Synapse are refused by engine edition, and a server older than major version 16 (2022) is refused (ADR-0011 F9). Isolation: ADR-0008 S7: the session is set to READ COMMITTED when a connection opens, and there is no connection replacement (see the rework above). The RCSI and collation checks run in `ApplyDatabaseSettingsAsync`, read single scalars, and log a Warning; if a value cannot be read they log that and do not throw.
+  - **Test side.**
+    - `EngineTraits` gains `IsRegistered`, `HasSchemaMigrations` (with `DefaultSchemaSource`) and `BoundsIndexedStrings`, each guarded against what the server and the migrations assembly do, and `PoolStatements` gains `CountRows` and `CountDistrustedForeignKeys`.
+    - On SQL Server, tests that need the migrations, and integration tests that start the server, are skipped with a reason that names registration; the integration sentinel checks the backend and that the server refuses the key.
+    - Pool reset: on SQL Server the foreign keys are switched off by DDL; the self-tests now check that the dirty database is the one reused and that its keys are all on and trusted afterwards.
+    - SQL Server runs also on databases with `READ_COMMITTED_SNAPSHOT OFF` (`SqlServerTestBackend.LockingReads`): the WriteConflict and BatchSave kit rows, and the session tests with the locking behaviours. And on a database whose default is `SQL_Latin1_General_CP1_CI_AS`: no collation conflict, BIN2 columns, the warning.
+  - **Known gaps added:** `SQLSERVER-SORTNAME-RANGE-CASE`, `SQLSERVER-INDEX-KEY-1700` (ADR-0009/G2, ADR-0012; accepts Msg 1946), `SQLSERVER-PATH-OVER-4000` (X12's path of 10,000 bytes, refused at the `nvarchar(4000)` column with Msg 2628), `SQLSERVER-TRAILING-SPACE` (ADR-0006/G1; Msg 2601 on `IX_ItemValues_Type_Value`) and `SQLSERVER-UTF16-ORDER` (ADR-0006/G2). The two tests of commit 9 (`TextComparisonTests`) passed on SQLite, PostgreSQL, MySQL and MariaDB in s10. On SQL Server they run, hit the gap, and are reported as skipped with the gap as the reason (`NotExecuted` in the TRX); if the gap closes they fail.
+  - **Results** (only runs that finished; all at `c12a641533`, the tip of the rework round, except where a line says otherwise; the final tip `d6d0951e9c` differs from it in comments only, see the comment-only round above).
+    - **g10, the per-commit gates of the rework round**, the 7 commits 3 to 9 as they were then, with the code hashes `15f096e50b`, `cfc98a65aa`, `ef808771ff`, `826e9e4521`, `47d5da8597`, `4fd719f43f` and `c12a641533`; it did not cover commits 1 and 2 (`/tmp/27/gates/g10`; `COMPLETE`; 12G cap): `results.tsv` has 132 rows over the base `fc39749cf9` and the 7 commits. 131 are rc 0 and 1 is n/a (`tests-SqlServer` of `15f096e50b`: no SQL Server backend in that commit).
+      - Debug build with 0 errors and 211 warnings, the same as the base; Release 0 warnings and 0 errors; format and the render check 0; and the targeted tests on all five engines (SQL Server from `cfc98a65aa`).
+      - 102 test legs. The TRX row audit (`trx-row-audit.tsv`) has 20,823 rows: 19,302 Passed and 1,521 NotExecuted, none failed. Its counts per leg equal `trx-summary.tsv`, and a skipped SQL Server row without a reason would fail it.
+      - The sentinels passed: `ProviderBackend_IsLive` 68 times and `CreateClient_SelectedProvider` 34 times.
+    - **g11, the per-commit gates of all nine commits at the final hashes**, `c0886933d2` to `d6d0951e9c` (`/tmp/27/gates/g11`; `COMPLETE`; 12G cap; run 03:43 to 05:44 on 2026-10-17, then the session runs to 05:47, as the service `multidb-27fix-g11`): `results.tsv` has 166 rows over the base `fc39749cf9` and the 9 commits. 163 are rc 0 and 3 are n/a (`tests-SqlServer` of commits 1 to 3: no SQL Server backend yet).
+      - Debug build with 0 errors and 211 warnings on every commit, the same as the base; Release 0 warnings and 0 errors; format and the render check 0; the targeted tests on all five engines (SQL Server from `314186a18d`).
+      - 126 test legs. The TRX row audit has 24,215 rows: 22,552 Passed and 1,663 NotExecuted, none failed, equal per leg to `trx-summary.tsv`. The sentinels passed: `ProviderBackend_IsLive` 84 times and `CreateClient_SelectedProvider` 42 times.
+      - At `d6d0951e9c`, the two SQL Server session classes passed on 2022 CU27 GDR1 and on 2025 CU9 GDR1: 42 passed, 0 failed on each (`/tmp/27/fix2/sessions-2022`, `/tmp/27/fix2/sessions-2025`).
+    - **s10, the full suites** (`/tmp/27/dev/s10`; 12G cap; `COMPLETE`; identity at start and end the same; `head.txt` is `c12a641533`). Failed 0 on every row; Passed + Skipped = Total:
+      - Implementations.Tests: SQL Server 2821 + 205 = 3026; SQLite 2865 + 169 = 3034; PostgreSQL 2863 + 149 = 3012; MySQL 2808 + 202 = 3010; MariaDB 2809 + 201 = 3010.
+      - Server.Tests: SQL Server 106 + 64 = 170; SQLite 161 + 11 = 172; PostgreSQL 153 + 18 = 171; MySQL 131 + 40 = 171; MariaDB 131 + 40 = 171.
+      - Server.Integration.Tests: SQL Server 8 + 140 = 148; SQLite 137 + 11 = 148; PostgreSQL 144 + 6 = 150; MySQL 144 + 6 = 150; MariaDB 144 + 6 = 150.
+      - Controller.Tests: 218 passed, 0 failed, 0 skipped.
+      - The docker lists before and after differ only by a Ryuk container left from g10's last leg (session `c247b62e`), which is gone at the end (`docker-before.tsv`, `docker-after.tsv`).
+      - The skips on SQL Server are the ones that name registration, the migrations, or another provider, plus the known gaps.
+    - **s10 against s7** (the old tip `81777870a6`; compared by row from the TRX files of `/tmp/27/dev/s7/full/trx` and `/tmp/27/dev/s10/full/trx`, all 15 legs): no row changed outcome, on any engine or suite.
+      - Only in s7: the 4 rows of `Resolve_NamesReadCommittedForATransactionThatNamesNoLevel`, on every engine.
+      - Only in s10: on SQL Server, 8 passed rows (the 2 new theories, 2 rows each, in the 2 session classes); on each of the other four engines, 4 rows that are not executed (the same theories, listed without parameters). So the row totals of the four are unchanged and SQL Server has 4 more rows.
+      - Server.Tests and Server.Integration.Tests: identical on all five engines.
+      - Superseded: s7 (`/tmp/27/dev/s7`), the full suites at `81777870a6`.
+    - **Tip checks** (`/tmp/27/tipcheck/s10-vs-x12.json`): s10 compared by test name with X12's tip proof (B36).
+      - No test changed outcome, on any engine or suite.
+      - Only in X12's run, the same 12 rows on every engine: the 6 `ModelShapeTests.ShapeDifferences_*` rows and the 4 `EngineTraitsTests.SupportsPartialIndexes_*` rows, which commit 2 (`d7f5fe0b3e`) replaces with the allowance tests, and `DefaultSchemaTests.DefaultDatabase_HasEveryMigrationApplied` and `ProviderAttributeTests.MigrationFact_MigrationOfTheSelectedProvider_IsNotSkipped`, which commit 4 (`314186a18d`) renames.
+      - Only in s10, on each of SQLite, PostgreSQL, MySQL and MariaDB: 234 Implementations rows (191 passed, 43 skipped with "Requires provider(s) SqlServer"). In s7 it was 234 rows too (195 passed, 39 skipped); the difference is the new theories (skipped here) and the 4 removed `Resolve_` rows (passed there).
+      - Server.Tests and Server.Integration.Tests: no row only on one side.
+      - No `Sequence_*.xml` file: no blame-hang fired.
+    - **Red controls** (`/tmp/27/red/final-k/results.json`): 22 controls, all caught, all reverted clean. They are `pessimistic-async`, `guid-converter`, `bin2-collation`, `indexed-text`, `unindexed-text`, `or-filter`, `cascades`, `like-translate`, `dateadd-literal`, `identity-insert`, `reseed-always`, `isolation-session`, `retry-locks`, `data-error-1946`, `restore-commit-per-table`, `pool-trust-in-fingerprint`, `purge-no-recheck`, `registered`, `gap-trailing-space`, `gap-utf16`, `gap-1700` and `collation-catalog-concat`. `pessimistic-async` was caught by the blame-hang message, not by a failed assertion.
+    - **SQL Server 2025 CU9 GDR (17.0.5015), advisory, not a gate** (`/tmp/27/dev/s10-sql2025`; image pinned by digest in `/tmp/27/scripts/dev2025.sh`): SQL Server Implementations 2821 + 205 = 3026, Server.Tests 106 + 64 = 170 and Server.Integration.Tests 8 + 140 = 148, Failed 0, the same totals as on 2022.
+    - **Vulnerable packages** (`/tmp/27/dev/s9/vulnerable.txt`, at `b9f6915197`; `vulnerable-head.txt` names that commit): 46 projects, each "has no vulnerable packages given the current sources", rc 0. No project or package file changed from `b9f6915197` to `c12a641533`, so it holds for the tip.
+    - **History, superseded.** s7 at `81777870a6` (above). g8 (`/tmp/27/gates/g8`) found CA1823 in the old commits 6 to 8. g9 (`/tmp/27/gates/g9`, commits 6 to 9 as rewritten, at `b9f6915197`) passed, and the first red run at `b9f6915197` (`/tmp/27/red/final`) found the gaps that the rework closed: `isolation-connection` not caught, and `identity-insert` and `registered` failing to build (23 controls: 20 caught, 2 build failures, 1 not caught).
+  - **Follow-ups:**
+    - Upstream-notes list: SQLite with `Pessimistic` holds a thread-affine lock across `await`; the option is a `SemaphoreSlim` (see Production exposure).
+    - X13: PostgreSQL, MySQL/MariaDB and SQL Server.
+    - ADR-0012 T7: the scan-level variant of test 3 is not written; test 5 waits for the baseline (step 28).
+    - ADR-0008 S7, "What remains": code that names SERIALIZABLE on a connection it holds open.
+    - `red.py` must stop the scope of the test after a blame-hang, so that no test host and no container is left. X13's removal of the `Pessimistic` rows retires the `pessimistic-async` control.
+    - The known gaps listed above stay open until upstream or the fork closes them; each has a test that fails when the gap closes.
+    - Step 28: the four items in the brief below.
+
+- **Step 28 brief, additions from step 27.**
+  - Flip `IsRegistered` and `HasSchemaMigrations` for SQL Server; the guards fail until both change. The skips that name registration then lift on their own, the integration suite runs on SQL Server, and `StartOverTests` and the integration factory's database-name and connect switches enrol SQL Server.
+  - The how-to (step 29) says that Azure SQL Database, Azure SQL Managed Instance and Azure Synapse are refused, and why (ADR-0011 F9).
+  - The baseline must cover the paired migration `20261016043615_IndexItemPathByHash` of X12 (B36), or carry it, as the 22b pairing rule requires of every provider with migrations.
+  - The CI entry for 2025 is advisory, pinned by digest `sha256:742481d1b1186cccc81220a1eaacef244ca8d0f7d19c8e5c70df8ae541ffbab2`.

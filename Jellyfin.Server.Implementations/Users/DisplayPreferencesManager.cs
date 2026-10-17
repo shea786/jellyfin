@@ -3,8 +3,10 @@ using System.Collections.Generic;
 using System.Linq;
 using Jellyfin.Database.Implementations;
 using Jellyfin.Database.Implementations.Entities;
+using Jellyfin.Extensions;
 using MediaBrowser.Controller;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging;
 
 namespace Jellyfin.Server.Implementations.Users;
 
@@ -16,19 +18,23 @@ public sealed class DisplayPreferencesManager : IDisplayPreferencesManager
     private const int MaxSaveAttempts = 3;
 
     private readonly IDbContextFactory<JellyfinDbContext> _dbContextFactory;
+    private readonly ILogger<DisplayPreferencesManager> _logger;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="DisplayPreferencesManager"/> class.
     /// </summary>
     /// <param name="dbContextFactory">The database context factory.</param>
-    public DisplayPreferencesManager(IDbContextFactory<JellyfinDbContext> dbContextFactory)
+    /// <param name="logger">The logger.</param>
+    public DisplayPreferencesManager(IDbContextFactory<JellyfinDbContext> dbContextFactory, ILogger<DisplayPreferencesManager> logger)
     {
         _dbContextFactory = dbContextFactory;
+        _logger = logger;
     }
 
     /// <inheritdoc />
     public DisplayPreferences GetDisplayPreferences(Guid userId, Guid itemId, string client)
     {
+        client = client.RemoveNullCharacters();
         using var dbContext = _dbContextFactory.CreateDbContext();
         var prefs = FindDisplayPreferences(dbContext, userId, itemId, client);
         if (prefs is not null)
@@ -62,6 +68,7 @@ public sealed class DisplayPreferencesManager : IDisplayPreferencesManager
     /// <inheritdoc />
     public ItemDisplayPreferences GetItemDisplayPreferences(Guid userId, Guid itemId, string client)
     {
+        client = client.RemoveNullCharacters();
         using var dbContext = _dbContextFactory.CreateDbContext();
         var prefs = dbContext.ItemDisplayPreferences
             .FirstOrDefault(pref => pref.UserId.Equals(userId) && pref.ItemId.Equals(itemId) && pref.Client == client);
@@ -79,6 +86,7 @@ public sealed class DisplayPreferencesManager : IDisplayPreferencesManager
     /// <inheritdoc />
     public IList<ItemDisplayPreferences> ListItemDisplayPreferences(Guid userId, string client)
     {
+        client = client.RemoveNullCharacters();
         using var dbContext = _dbContextFactory.CreateDbContext();
         return dbContext.ItemDisplayPreferences
             .Where(prefs => prefs.UserId.Equals(userId) && !prefs.ItemId.Equals(default) && prefs.Client == client)
@@ -88,6 +96,7 @@ public sealed class DisplayPreferencesManager : IDisplayPreferencesManager
     /// <inheritdoc />
     public Dictionary<string, string?> ListCustomItemDisplayPreferences(Guid userId, Guid itemId, string client)
     {
+        client = client.RemoveNullCharacters();
         using var dbContext = _dbContextFactory.CreateDbContext();
         return dbContext.CustomItemDisplayPreferences
             .Where(prefs => prefs.UserId.Equals(userId)
@@ -99,6 +108,23 @@ public sealed class DisplayPreferencesManager : IDisplayPreferencesManager
     /// <inheritdoc />
     public void SetCustomItemDisplayPreferences(Guid userId, Guid itemId, string client, Dictionary<string, string?> customPreferences)
     {
+        client = client.RemoveNullCharacters();
+        var cleanedPreferences = new Dictionary<string, string?>();
+        foreach (var (key, value) in customPreferences)
+        {
+            var cleanedKey = key.RemoveNullCharacters();
+            if (cleanedKey.Length > KeyNormalizer.DisplayPreferencesKeyMaxLength)
+            {
+                _logger.LogWarning(
+                    "Dropping a custom display preference with a key of {Length} characters, the maximum is {Max}",
+                    cleanedKey.Length,
+                    KeyNormalizer.DisplayPreferencesKeyMaxLength);
+                continue;
+            }
+
+            cleanedPreferences[cleanedKey] = value;
+        }
+
         // Another request can store one of these keys after this one's delete, and the unique index then rejects the
         // insert. Replacing the set again gives the same result, so the replace is repeated.
         for (var attempt = 1; ; attempt++)
@@ -110,7 +136,7 @@ public sealed class DisplayPreferencesManager : IDisplayPreferencesManager
                                 && prefs.Client == client)
                                 .ExecuteDelete();
 
-            foreach (var (key, value) in customPreferences)
+            foreach (var (key, value) in cleanedPreferences)
             {
                 dbContext.CustomItemDisplayPreferences
                     .Add(new CustomItemDisplayPreferences(userId, itemId, client, key, value));
