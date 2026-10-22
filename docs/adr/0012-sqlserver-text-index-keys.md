@@ -258,4 +258,10 @@ Two kinds of option are weighed. The storage and index options decide when a key
     - 2: `IndexKeyLengthTests`, on every engine: a path of 850 and of 851 characters, and the sort name at the room of the series index (659 characters) and one over it. The longer rows are marked with `SQLSERVER-INDEX-KEY-1700`.
     - 3: `SqlServerIndexKeyBatchAndRestoreTests`. Without (S), no item is saved and the refusal is Msg 1946. With (S), N − 1 items are saved and the error is logged with the path. X11's kit rows cover the other engines. The scan-level variant is not written; it is a follow-up.
     - 4: the same class. A restore whose archive holds an item with an 851-character path fails with Msg 1946, and the database afterwards holds exactly what it held before, including a row added after the backup that the restore's purge had deleted. A copy of the archive taken before the path was lengthened then restores, and removes that row, so the state compared is one a restore changes.
-    - 5 waits for the baseline (step 28).
+    - 5: done in step 28 (`SqlServerBaselineSchemaTests.MigratedDatabase_HoldsTheEighteenOverBudgetIndexes`).
+
+## Amendments (step 28, 2026-10-22)
+
+- **T8. Test 5 is pinned.**
+  - Test 5 is pinned by `SqlServerBaselineSchemaTests.MigratedDatabase_HoldsTheEighteenOverBudgetIndexes`.
+  - The test migrates an empty database, asserts that all 18 over-budget composite indexes exist in `sys.indexes`, and uses a `ListLogger` to assert that zero `Error` or `Critical` entries were logged during migration (verifying that the expected SQL Server Msg 1945 index-key warnings do not cause migration to fail).

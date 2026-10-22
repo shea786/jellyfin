@@ -165,3 +165,8 @@ The project owner asked what a contributor has to do per database once this land
   - **Target protection.** `RestoreBackupAsync` checks archive paths against `DatabaseConfigurationStore.DatabaseConfigurationFileName` (case-insensitively). Any archive entry matching `database.xml` is skipped and cannot overwrite the target host's database configuration.
   - **Security and cross-engine portability.** This ensures that secrets in `database.xml` (passwords, connection strings, host credentials) are never exfiltrated into backup zip archives, and restoring an archive onto another host preserves that host's database provider, credentials, and settings.
 
+## Amendments (step 28, 2026-10-22)
+
+- **W8. SQL Server registration and workflow enrolment.**
+  - `Jellyfin-SqlServer` is registered in `ServiceCollectionExtensions` with the once-per-database experimental provider warning.
+  - SQL Server is enrolled in `dev/add-migration` (W1), the shared `PairedMigrationsIdGenerator` via `SqlServerDesignTimeServices` (W2), and the workflow tests (`MigrationProvider.All` and `MigrationContentsAllowlist.json`, W3).
