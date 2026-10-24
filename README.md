@@ -1,3 +1,10 @@
+> **Jellyfin multi-database fork — [shea786/jellyfin](https://github.com/shea786/jellyfin)**
+>
+> This fork develops database-provider support independently of the upstream Jellyfin project.
+> SQLite remains the default; PostgreSQL is a primary validation target. MySQL, MariaDB and SQL Server are experimental.
+> See the [database operator guide](docs/database/README.md) and [fork maintenance plan](docs/fork-maintenance.md).
+> The maintenance foundation is being prepared; release qualification and packaged fork releases are still pending.
+
 <h1 align="center">Jellyfin</h1>
 <h3 align="center">The Free Software Media System</h3>
 

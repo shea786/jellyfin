@@ -1,6 +1,6 @@
 # Running Jellyfin on a database server
 
-These pages are for operators of the multi-database fork of Jellyfin (`feature/multi-db`). Upstream Jellyfin
+These pages are for operators of the [multi-database fork of Jellyfin](https://github.com/shea786/jellyfin). Upstream Jellyfin
 stores its data in SQLite only. The fork can also store it in PostgreSQL, MySQL, MariaDB or SQL Server, selected in
 `database.xml`.
 
@@ -18,6 +18,8 @@ experimental; its CI jobs are not required, and it may be withdrawn.
 
 Each page covers the database and its user, `database.xml`, the first start, backups and restores, upgrades, and
 a Docker Compose example.
+
+See the [fork maintenance plan](../fork-maintenance.md) for branch, CI and preview-release qualification work.
 
 ## Docker Compose
 
