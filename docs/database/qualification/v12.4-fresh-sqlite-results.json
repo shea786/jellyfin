@@ -1,0 +1,9 @@
+{
+  "checks": [
+    "fresh fork SQLite image starts the wizard",
+    "fresh fork SQLite health",
+    "matching stable web client is served",
+    "fresh fork SQLite administrator persisted",
+    "fresh fork SQLite restart preserves the account"
+  ]
+}
