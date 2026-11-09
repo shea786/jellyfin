@@ -10,6 +10,9 @@ The preparation branch is `fork/maintenance-foundation`. It contains the complet
 and architecture records, plus the eight reviewed follow-up commits through `6dda5e1621` from the upstream PR branch.
 The runtime implementation matches `multidb/upstream-all` at that commit.
 
+This foundation was built on upstream development commit `c7ce6a1b56`, not a stable release.
+It preserves the existing work while the database changes are ported to the stable baseline described below.
+
 The fork currently has no published fork releases. The supported tiers below describe the validation and maintenance
 targets; they do not certify a production release. The first release needs the qualification work listed below.
 
@@ -29,19 +32,37 @@ Every release must retain SQLite functionality. PostgreSQL is the first external
 release. Experimental providers retain their startup warnings and documented known gaps; promotion requires the
 evidence and dependency review described in ADR-0011.
 
+## Stable release policy
+
+Maintained fork releases must use the latest published, non-prerelease Jellyfin release as their upstream baseline.
+Resolve the latest stable release when preparing an update and check again before publishing the fork release.
+Pin the exact upstream tag and commit in the release notes and build metadata so every build remains reproducible.
+As checked on 2026-11-09, the initial target is [Jellyfin v12.4](https://github.com/jellyfin/jellyfin/releases/tag/v12.4).
+This dated target must be checked again before release; it is not a permanent version pin.
+
+Upstream `master`, release candidates and moving release-branch tips are not release baselines. Updates to a new
+stable release must pass review, supported-database CI and upgrade/restore qualification before publication.
+The policy selects the latest stable target; it does not automatically deploy updates or certify them as tested.
+
 ## Branches and upstream updates
 
 Use the following layout when activating fork maintenance:
 
-- `multidb/main`: proposed default branch for the maintained fork, seeded from the maintenance foundation.
-- `master`: retain the existing upstream baseline for comparison and fork synchronization.
+- `multidb/main`: proposed default branch for the maintained fork, established after porting and validating the
+  database changes against the latest stable upstream tag.
+- `master`: retain for upstream development tracking and comparison; do not use it as the release baseline.
 - `fix/*` and `feature/*`: short-lived changes reviewed against `multidb/main`.
-- `sync/upstream-YYYY-MM-DD`: upstream updates prepared and tested before merging into the maintained branch.
+- `sync/upstream-<stable-tag>`: stable-release updates prepared and tested before merging into the maintained branch.
+- `fork/maintenance-foundation`: preserve the development-based implementation and architecture records as porting history.
 - `feature/multi-db`, `multidb/upstream` and `multidb/upstream-all`: retain as development and submission history.
 
-An upstream update starts from `multidb/main`, fetches `jellyfin/jellyfin:master`, and merges that upstream history
-on the synchronization branch. Review entity-model changes, migrations, provider conventions, queries and dependency
-versions before running the database matrix. Preserve upstream attribution and published fork history.
+The initial port starts from the latest stable upstream tag on a preparation branch and applies the fork's database
+changes selectively from the maintenance foundation. Do not merge the entire development-based foundation into the
+stable branch: that would also import unreleased upstream changes. Review the resulting changes against the stable tag.
+
+Subsequent upstream updates start from `multidb/main`, fetch the latest stable release tag and integrate that tagged
+history on a synchronization branch. Review entity-model changes, migrations, provider conventions, queries and
+dependency versions before running the database matrix. Preserve upstream attribution and published fork history.
 
 Upstream releases and security fixes should be reviewed promptly. Scheduled checks can identify changes, but a
 maintainer reviews and merges each synchronization; database migrations and dependency upgrades need explicit review.
@@ -75,7 +96,8 @@ the entry point for this implementation.
 
 Qualify a preview before describing a build as a maintained release:
 
-1. Run a fresh full CI matrix on the chosen release commit, including SQLite and PostgreSQL. Earlier targeted test
+1. Verify the chosen upstream baseline is still the latest stable release and record its tag and commit. Run a fresh
+   full CI matrix on the chosen fork release commit, including SQLite and PostgreSQL. Earlier targeted test
    passes are useful evidence, but do not replace this run.
 2. Test a fresh SQLite installation and an upgrade of a copy of an existing SQLite library.
 3. Test a fresh PostgreSQL installation and SQLite-to-PostgreSQL backup/restore on a disposable library copy.
