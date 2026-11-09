@@ -16,6 +16,7 @@ It preserves the existing work while the database changes are ported to the stab
 The stable port is prepared on `port/stable-v12.4`, starting at upstream tag `v12.4`
 (`83d0d0e7f76e23e2e085c8ff67d28b772d35967d`). Its code and package versions retain that release's upstream fixes.
 The development-based foundation remains available as history; only the fork's changes are applied to the stable tag.
+See the [v12.4 qualification record](database/qualification/v12.4.md) for tested commits, CI and installation evidence.
 
 The fork currently has no published fork releases. The supported tiers below describe the validation and maintenance
 targets; they do not certify a production release. The first release needs the qualification work listed below.
@@ -78,8 +79,9 @@ the default branch, adapt the push and release triggers for the maintained branc
 from upstream. Some bot jobs require upstream-only secrets; the release version-bump workflow also assumes upstream
 release branches and a Jellyfin bot identity.
 
-For the first full run, use pull requests inside this fork so its own CI results are available independently of
-upstream's fork-workflow approval process. Keep the workflows' current read-only token default.
+The Tests and Format workflows run on pushes to `port/stable-*` and `multidb/main`, and can also be run manually.
+They also run on pull requests inside the fork, independently of upstream's fork-workflow approval process.
+Keep the workflows' current read-only token default.
 
 After the jobs have run successfully, configure required checks for the maintained branch:
 
