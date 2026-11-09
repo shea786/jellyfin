@@ -18,8 +18,9 @@ The stable port is prepared on `port/stable-v12.4`, starting at upstream tag `v1
 The development-based foundation remains available as history; only the fork's changes are applied to the stable tag.
 See the [v12.4 qualification record](database/qualification/v12.4.md) for tested commits, CI and installation evidence.
 
-The fork currently has no published fork releases. The supported tiers below describe the validation and maintenance
-targets; they do not certify a production release. The first release needs the qualification work listed below.
+The maintained/default branch is `multidb/main`. The first preview is
+[`v12.4.0-multidb.preview.1`](releases/v12.4.0-multidb.preview.1.md); its release notes describe the qualified upgrade
+path and remaining limits. Support tiers are maintenance targets and do not turn a preview into a production release.
 
 ## Database targets
 
@@ -51,10 +52,10 @@ The policy selects the latest stable target; it does not automatically deploy up
 
 ## Branches and upstream updates
 
-Use the following layout when activating fork maintenance:
+Use the following layout for fork maintenance:
 
-- `multidb/main`: proposed default branch for the maintained fork, established after porting and validating the
-  database changes against the latest stable upstream tag.
+- `multidb/main`: maintained default branch, based on the qualified stable port. Changes go through pull requests
+  with required formatting, SQLite and PostgreSQL checks.
 - `master`: retain for upstream development tracking and comparison; do not use it as the release baseline.
 - `fix/*` and `feature/*`: short-lived changes reviewed against `multidb/main`.
 - `sync/upstream-<stable-tag>`: stable-release updates prepared and tested before merging into the maintained branch.
@@ -83,18 +84,21 @@ The Tests and Format workflows run on pushes to `port/stable-*` and `multidb/mai
 They also run on pull requests inside the fork, independently of upstream's fork-workflow approval process.
 Keep the workflows' current read-only token default.
 
-After the jobs have run successfully, configure required checks for the maintained branch:
+Branch protection requires these GitHub Actions checks on the maintained branch:
 
-- Formatting and the SQLite test suite.
-- PostgreSQL tests, including the backend-liveness sentinel.
-- Provider/migration parity and the generated operator-documentation check already run by the database workflow.
-- OpenAPI, ABI and security checks where applicable to the change.
+- `format-check`.
+- `run-tests (ubuntu-latest)`, `run-tests (macos-latest)` and `run-tests (windows-latest)`.
+- `run-tests-db / Postgres`, including the backend-liveness sentinels, migration/model parity and generated docs.
+
+Branches must be up to date before merging. Pull requests are required; the sole maintainer can merge a passing PR
+without an additional approving reviewer. Admins are subject to the same required checks. OpenAPI, ABI and CodeQL
+continue to provide additional change review; experimental database and newest-version jobs are not required checks.
 
 Run the experimental database jobs and record their failures and accepted gaps. Their experimental status remains
 visible; failures in supported SQLite or PostgreSQL tests block a release. Newest-version advisory jobs do not
 establish a new minimum supported version by themselves.
 
-Enable the fork's issue tracker and Discussions when activating the maintained branch. Fork-specific bugs and support
+The fork has its own issue tracker, Discussions and private vulnerability reporting. Fork-specific bugs and support
 requests belong there. Keep upstream links and credits in the inherited documentation, with the fork notice providing
 the entry point for this implementation.
 
@@ -139,3 +143,24 @@ Any upstream communication should explain the maintainer's own goals and underst
 required by [Jellyfin's communication policy](https://jellyfin.org/docs/general/contributing/llm-policies/).
 Keep the original submission closed while discussing a new direction. Submit standalone bug fixes only when they
 have a clear reproducer, focused implementation and tests, and fit the upstream process.
+
+
+## Publishing fork previews
+
+Preview tags follow `v<upstream-server-version>-multidb.preview.<number>`, initially
+`v12.4.0-multidb.preview.1`. Add release notes in `docs/releases/<tag>.md`, merge the candidate through the maintained
+branch, and wait for all five required GitHub Actions checks to pass on its exact commit before tagging it.
+The first activation bootstraps `multidb/main` from the already qualified port before branch protection is enabled.
+
+The `Fork Preview` workflow validates the tag, maintained-branch ancestry, recorded upstream tag/commit and the
+latest stable upstream release through GitHub. It refuses publication if a newer stable baseline exists or required
+CI has not passed. `.github/fork-release.json` records the baseline and required checks; update it together with the
+stable port, image/runtime pins, release notes and qualification evidence for subsequent upstream releases.
+
+The workflow uses only its repository-scoped `GITHUB_TOKEN`, with contents/checks/packages permissions declared in
+that job. It publishes a versioned Linux amd64 image to `ghcr.io/shea786/jellyfin-multidb`, a public GitHub prerelease,
+a downloadable Docker image archive, a provenance manifest and checksums. It does not publish a `latest` tag or
+change a running installation. New GHCR packages must have public visibility before advertising anonymous pulls.
+
+Upstream bot commands, issue triage, version bumps, OpenAPI publishing and bot comments are guarded to run only in
+`jellyfin/jellyfin`. No Jellyfin bot token, release identity or upstream infrastructure is required by fork publishing.

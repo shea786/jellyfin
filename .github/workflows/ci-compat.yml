@@ -115,6 +115,7 @@ jobs:
           } >> $GITHUB_OUTPUT
 
       - name: Find difference comment
+        if: github.repository == 'jellyfin/jellyfin'
         uses: peter-evans/find-comment@b30e6a3c0ed37e7c023ccd3f1db5c6c0b0c23aad # v4.0.0
         id: find-comment
         with:
@@ -124,7 +125,7 @@ jobs:
 
       - name: Reply or edit difference comment (changed)
         uses: peter-evans/create-or-update-comment@e8674b075228eee787fea43ef493e45ece1004c9 # v5.0.0
-        if: ${{ steps.diff.outputs.body != '' }}
+        if: ${{ github.repository == 'jellyfin/jellyfin' && steps.diff.outputs.body != '' }}
         with:
           issue-number: ${{ github.event.pull_request.number }}
           comment-id: ${{ steps.find-comment.outputs.comment-id }}
@@ -143,7 +144,7 @@ jobs:
 
       - name: Reply or edit difference comment (unchanged)
         uses: peter-evans/create-or-update-comment@e8674b075228eee787fea43ef493e45ece1004c9 # v5.0.0
-        if: ${{ steps.diff.outputs.body == '' && steps.find-comment.outputs.comment-id != '' }}
+        if: ${{ github.repository == 'jellyfin/jellyfin' && steps.diff.outputs.body == '' && steps.find-comment.outputs.comment-id != '' }}
         with:
           issue-number: ${{ github.event.pull_request.number }}
           comment-id: ${{ steps.find-comment.outputs.comment-id }}

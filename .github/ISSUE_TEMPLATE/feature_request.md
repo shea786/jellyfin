@@ -1,13 +1,13 @@
 ---
-name: Feature Request
-about: Request a new feature
+name: Fork feature proposal
+about: Propose a focused improvement to this multi-database fork
 title: ''
-labels: feature-request
+labels: enhancement
 assignees: ''
 ---
 
-**PLEASE DO NOT OPEN FEATURE REQUEST ISSUES ON GITHUB**
+Describe the problem, the database providers affected, and the proposed behavior.
+Include compatibility, migration and testing considerations if applicable.
 
-**Feature requests should be opened on our dedicated [feature request](https://features.jellyfin.org/) hub so they can be appropriately discussed and prioritized.**
-
-However, if you are willing to contribute to the project by adding a new feature yourself, then please ensure that you first review our [documentation](https://docs.jellyfin.org/general/contributing/development.html) on contributing code. Once you have reviewed the documentation, feel free to come back here and open an issue here outlining your proposed approach so that it can be documented, tracked, and discussed by other team members.
+Discuss large architectural changes with the fork maintainer before implementing them.
+For usage questions, use https://github.com/shea786/jellyfin/discussions.

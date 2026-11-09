@@ -5,6 +5,7 @@ on:
       - opened
 jobs:
   check_issue:
+    if: github.repository == 'jellyfin/jellyfin'
     runs-on: ubuntu-latest
     permissions:
       issues: write

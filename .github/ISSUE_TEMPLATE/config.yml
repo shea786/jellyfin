@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Fork support and database discussions
+    url: https://github.com/shea786/jellyfin/discussions
+    about: Questions about running the independently maintained fork.
+  - name: Private security report
+    url: https://github.com/shea786/jellyfin/security/advisories/new
+    about: Report a vulnerability privately to this fork's maintainer.

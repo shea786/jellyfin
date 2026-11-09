@@ -1,0 +1,93 @@
+name: Fork Preview
+
+on:
+  push:
+    tags:
+      - 'v*-multidb.preview.*'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fork-preview-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    if: github.repository == 'shea786/jellyfin'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: write
+      checks: read
+      packages: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Check out the tagged source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Validate stable baseline, tag and CI
+        run: python3 .github/scripts/validate-preview.py
+
+      - name: Log in to the fork image registry
+        run: printf '%s' "$GH_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+
+      - name: Build the qualified architecture
+        run: |
+          docker build --platform "$PLATFORM" \
+            -f docs/database/compose/Dockerfile -t "$IMAGE" \
+            --label "org.opencontainers.image.source=https://github.com/$GITHUB_REPOSITORY" \
+            --label "org.opencontainers.image.revision=$(git rev-parse HEAD)" \
+            --label "org.opencontainers.image.version=$PREVIEW_TAG" \
+            --label 'org.opencontainers.image.title=Independent Jellyfin multi-database fork' \
+            .
+
+      - name: Verify the packaged runtime and server version
+        run: |
+          docker run --rm --entrypoint cat "$IMAGE" /jellyfin/jellyfin.runtimeconfig.json > /tmp/runtime.json
+          python3 - <<'PY'
+          import json
+          data = json.load(open('/tmp/runtime.json'))['runtimeOptions']['includedFrameworks']
+          assert {f['name']: f['version'] for f in data} == {
+              'Microsoft.NETCore.App': '10.0.14', 'Microsoft.AspNetCore.App': '10.0.14'
+          }, data
+          PY
+          docker run --rm --entrypoint /jellyfin/jellyfin "$IMAGE" --version
+
+      - name: Publish the versioned image
+        run: docker push "$IMAGE"
+
+      - name: Prepare downloadable image and provenance
+        run: |
+          mkdir -p dist
+          archive="jellyfin-${PREVIEW_TAG}-linux-amd64.tar.gz"
+          docker save "$IMAGE" | gzip -1 > "dist/$archive"
+          docker image inspect "$IMAGE" > /tmp/image.json
+          python3 - <<'PY'
+          import json, os, pathlib, subprocess
+          config = json.loads(pathlib.Path('.github/fork-release.json').read_text())
+          image = json.load(open('/tmp/image.json'))[0]
+          manifest = dict(config, tag=os.environ['PREVIEW_TAG'], image_tag=os.environ['IMAGE'],
+                          source_commit=subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip(),
+                          image_digest=image['RepoDigests'][0], image_id=image['Id'],
+                          runtime_version='10.0.14', supported_databases=['SQLite', 'PostgreSQL'],
+                          experimental_databases=['MySQL', 'MariaDB', 'SQL Server'])
+          pathlib.Path('dist/preview-manifest.json').write_text(json.dumps(manifest, indent=2) + '\n')
+          PY
+          cp "docs/releases/$PREVIEW_TAG.md" dist/RELEASE-NOTES.md
+          (cd dist && sha256sum ./*.tar.gz preview-manifest.json RELEASE-NOTES.md > SHA256SUMS)
+
+      - name: Publish the GitHub prerelease
+        run: |
+          gh release create "$PREVIEW_TAG" dist/* \
+            --repo "$GITHUB_REPOSITORY" --verify-tag \
+            --target "$(git rev-parse HEAD)" --prerelease --latest=false \
+            --title "Jellyfin multi-database $PREVIEW_TAG (preview)" \
+            --notes-file "docs/releases/$PREVIEW_TAG.md"
+
+      - name: Log out of the image registry
+        if: always()
+        run: docker logout ghcr.io

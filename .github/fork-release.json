@@ -1,0 +1,14 @@
+{
+  "upstream_tag": "v12.4",
+  "upstream_commit": "83d0d0e7f76e23e2e085c8ff67d28b772d35967d",
+  "server_version": "12.4.0",
+  "platform": "linux/amd64",
+  "image": "ghcr.io/shea786/jellyfin-multidb",
+  "required_checks": [
+    "format-check",
+    "run-tests (ubuntu-latest)",
+    "run-tests (macos-latest)",
+    "run-tests (windows-latest)",
+    "run-tests-db / Postgres"
+  ]
+}

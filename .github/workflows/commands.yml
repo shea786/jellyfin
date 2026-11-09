@@ -13,7 +13,7 @@ permissions: {}
 jobs:
   rebase:
     name: Rebase
-    if: github.event.issue.pull_request != '' && contains(github.event.comment.body, '@jellyfin-bot rebase') && github.event.comment.author_association == 'MEMBER'
+    if: github.repository == 'jellyfin/jellyfin' && github.event.issue.pull_request != '' && contains(github.event.comment.body, '@jellyfin-bot rebase') && github.event.comment.author_association == 'MEMBER'
     runs-on: ubuntu-latest
     steps:
       - name: Notify as seen
@@ -36,7 +36,7 @@ jobs:
 
   rename:
     name: Rename
-    if: contains(github.event.comment.body, '@jellyfin-bot rename')
+    if: github.repository == 'jellyfin/jellyfin' && contains(github.event.comment.body, '@jellyfin-bot rename')
     runs-on: ubuntu-latest
     steps:
       - name: pull in script

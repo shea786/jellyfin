@@ -3,8 +3,10 @@
 > This fork develops database-provider support independently of the upstream Jellyfin project.
 > SQLite remains the default; PostgreSQL is a primary validation target. MySQL, MariaDB and SQL Server are experimental.
 > See the [database operator guide](docs/database/README.md) and [fork maintenance plan](docs/fork-maintenance.md).
-> This preparation branch ports the database changes to stable Jellyfin v12.4. See the
-> [qualification record](docs/database/qualification/v12.4.md) for CI and upgrade/restore results; packaged fork releases are pending.
+> Maintained on `multidb/main`, based on the latest stable upstream release (currently Jellyfin v12.4).
+> See the [preview release notes](docs/releases/v12.4.0-multidb.preview.1.md) and
+> [qualification record](docs/database/qualification/v12.4.md). Fork support: [issues](https://github.com/shea786/jellyfin/issues)
+> and [discussions](https://github.com/shea786/jellyfin/discussions).
 
 <h1 align="center">Jellyfin</h1>
 <h3 align="center">The Free Software Media System</h3>
