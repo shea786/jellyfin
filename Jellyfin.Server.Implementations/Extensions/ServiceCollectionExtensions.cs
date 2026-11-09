@@ -1,17 +1,22 @@
 using System;
 using System.Collections.Generic;
+using System.Collections.ObjectModel;
 using System.IO;
 using System.Linq;
 using System.Reflection;
 using Jellyfin.Database.Implementations;
 using Jellyfin.Database.Implementations.DbConfiguration;
 using Jellyfin.Database.Implementations.Locking;
+using Jellyfin.Database.Providers.MySql;
+using Jellyfin.Database.Providers.Postgres;
 using Jellyfin.Database.Providers.Sqlite;
+using Jellyfin.Database.Providers.SqlServer;
 using MediaBrowser.Common.Configuration;
 using MediaBrowser.Controller.Configuration;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using JellyfinDbProviderFactory = System.Func<System.IServiceProvider, Jellyfin.Database.Implementations.IJellyfinDatabaseProvider>;
 
 namespace Jellyfin.Server.Implementations.Extensions;
@@ -21,9 +26,14 @@ namespace Jellyfin.Server.Implementations.Extensions;
 /// </summary>
 public static class ServiceCollectionExtensions
 {
+    private const string ConnectionStringOverrideKey = "database:ConnectionString";
+
     private static IEnumerable<Type> DatabaseProviderTypes()
     {
         yield return typeof(SqliteDatabaseProvider);
+        yield return typeof(PostgresDatabaseProvider);
+        yield return typeof(MySqlDatabaseProvider);
+        yield return typeof(SqlServerDatabaseProvider);
     }
 
     private static IDictionary<string, JellyfinDbProviderFactory> GetSupportedDbProviders()
@@ -42,6 +52,43 @@ public static class ServiceCollectionExtensions
         }
 
         return items;
+    }
+
+    /// <summary>
+    /// Refuses a locking behaviour that the database provider does not support. It is called when the provider is created
+    /// and not when it is registered, so that the check runs where the server starts and reads the capability of the
+    /// provider that was chosen.
+    /// </summary>
+    /// <param name="configuration">The database configuration.</param>
+    /// <param name="provider">The provider that was created for it.</param>
+    /// <exception cref="InvalidOperationException">The configuration asks for Pessimistic locking and the provider does not support it.</exception>
+    internal static void EnsureLockingBehaviorIsSupported(DatabaseConfigurationOptions configuration, IJellyfinDatabaseProvider provider)
+    {
+        if (configuration.LockingBehavior == DatabaseLockingBehaviorTypes.Pessimistic && !provider.SupportsPessimisticLocking)
+        {
+            throw new InvalidOperationException(
+                $"{nameof(DatabaseConfigurationOptions.LockingBehavior)} in database.xml is {nameof(DatabaseLockingBehaviorTypes.Pessimistic)}, "
+                + $"which the database provider '{configuration.DatabaseType}' does not support. "
+                + $"Set {nameof(DatabaseConfigurationOptions.LockingBehavior)} to {nameof(DatabaseLockingBehaviorTypes.NoLock)}, the default, or {nameof(DatabaseLockingBehaviorTypes.Optimistic)}.");
+        }
+    }
+
+    internal static DatabaseConfigurationOptions WithConnectionStringOverride(DatabaseConfigurationOptions source, string connectionString)
+    {
+        var customProviderOptions = source.CustomProviderOptions;
+        return new DatabaseConfigurationOptions
+        {
+            DatabaseType = source.DatabaseType,
+            LockingBehavior = source.LockingBehavior,
+            CustomProviderOptions = new CustomDatabaseOptions
+            {
+                PluginName = customProviderOptions?.PluginName ?? string.Empty,
+                PluginAssembly = customProviderOptions?.PluginAssembly ?? string.Empty,
+                ConnectionString = connectionString,
+                Options = new Collection<CustomDatabaseOption>(
+                    customProviderOptions?.Options?.Select(option => new CustomDatabaseOption { Key = option.Key, Value = option.Value }).ToList() ?? [])
+            }
+        };
     }
 
     private static JellyfinDbProviderFactory? LoadDatabasePlugin(CustomDatabaseOptions customProviderOptions, IApplicationPaths applicationPaths)
@@ -121,7 +168,28 @@ public static class ServiceCollectionExtensions
             }
         }
 
-        serviceCollection.AddSingleton<IJellyfinDatabaseProvider>(providerFactory!);
+        // The override is given to the provider as a copy. The cached and stored configuration must never hold it.
+        var providerConfiguration = efCoreConfiguration;
+        var connectionStringOverride = configuration.GetValue<string>(ConnectionStringOverrideKey);
+        var hasConnectionStringOverride = !string.IsNullOrWhiteSpace(connectionStringOverride);
+        if (hasConnectionStringOverride)
+        {
+            providerConfiguration = WithConnectionStringOverride(efCoreConfiguration, connectionStringOverride!);
+        }
+
+        serviceCollection.AddSingleton<IJellyfinDatabaseProvider>(services =>
+        {
+            if (hasConnectionStringOverride)
+            {
+                services.GetRequiredService<ILoggerFactory>()
+                    .CreateLogger(typeof(ServiceCollectionExtensions).FullName!)
+                    .LogInformation("The database connection string is taken from the configuration key {ConfigurationKey} instead of database.xml", ConnectionStringOverrideKey);
+            }
+
+            var provider = providerFactory!(services);
+            EnsureLockingBehaviorIsSupported(efCoreConfiguration, provider);
+            return provider;
+        });
 
         switch (efCoreConfiguration.LockingBehavior)
         {
@@ -139,7 +207,7 @@ public static class ServiceCollectionExtensions
         serviceCollection.AddPooledDbContextFactory<JellyfinDbContext>((serviceProvider, opt) =>
         {
             var provider = serviceProvider.GetRequiredService<IJellyfinDatabaseProvider>();
-            provider.Initialise(opt, efCoreConfiguration);
+            provider.Initialise(opt, providerConfiguration);
             var lockingBehavior = serviceProvider.GetRequiredService<IEntityFrameworkCoreLockingBehavior>();
             lockingBehavior.Initialise(opt);
         });

@@ -10,6 +10,7 @@ using Jellyfin.Data.Enums;
 using Jellyfin.Database.Implementations;
 using Jellyfin.Database.Implementations.Entities;
 using Jellyfin.Extensions;
+using Jellyfin.Server.Implementations;
 using MediaBrowser.Controller.Configuration;
 using MediaBrowser.Controller.Entities;
 using MediaBrowser.Controller.Library;
@@ -25,10 +26,10 @@ namespace Emby.Server.Implementations.Library.Search;
 public class SqlSearchProvider : IInternalSearchProvider
 {
     private const int DefaultSearchLimit = 100;
-    private const float ExactMatchScore = 100f;
-    private const float PrefixMatchScore = 80f;
-    private const float WordPrefixMatchScore = 75f;
-    private const float ContainsMatchScore = 50f;
+    private const int ExactMatchScore = 100;
+    private const int PrefixMatchScore = 80;
+    private const int WordPrefixMatchScore = 75;
+    private const int ContainsMatchScore = 50;
 
     private static readonly Guid _placeholderId = Guid.Parse("00000000-0000-0000-0000-000000000001");
 
@@ -93,21 +94,18 @@ public class SqlSearchProvider : IInternalSearchProvider
         }
 
         var cleanSearchTerm = rawSearchTerm.GetCleanValue();
-        if (string.IsNullOrEmpty(cleanSearchTerm))
+        var likeOriginal = MatchNormalizer.ContainsCleanOriginalTitlePattern(rawSearchTerm);
+        if (string.IsNullOrEmpty(cleanSearchTerm) || likeOriginal is null)
         {
             return [];
         }
 
         var cleanPrefix = cleanSearchTerm + " ";
-        // OriginalTitle is stored mixed-case and isn't pre-normalized like CleanName,
-        // so match it via a case-insensitive LIKE rather than a per-row case conversion
-        // that may not translate to SQL on every provider.
-        var likeOriginal = $"%{rawSearchTerm}%";
 
         // Great benefit for users with metadata in non-latin script
         // since SortName is among other things stored transliterated.
         var sortNameShape = BaseItem.GetSortName(rawSearchTerm, true, _configurationManager.Configuration);
-        var likeSortName = string.IsNullOrWhiteSpace(sortNameShape) ? null : $"%{sortNameShape}%";
+        var likeSortName = string.IsNullOrWhiteSpace(sortNameShape) ? null : LikePatterns.ContainsIgnoreAsciiCase(sortNameShape);
 
         var limit = query.Limit ?? DefaultSearchLimit;
 
@@ -124,14 +122,14 @@ public class SqlSearchProvider : IInternalSearchProvider
             {
                 dbQuery = dbQuery
                     .Where(e => e.CleanName!.Contains(cleanSearchTerm)
-                        || (e.OriginalTitle != null && EF.Functions.Like(e.OriginalTitle, likeOriginal)));
+                        || EF.Functions.Like(e.CleanOriginalTitle, likeOriginal, LikePatterns.Escape));
             }
             else
             {
                 dbQuery = dbQuery
                     .Where(e => e.CleanName!.Contains(cleanSearchTerm)
-                        || (e.OriginalTitle != null && EF.Functions.Like(e.OriginalTitle, likeOriginal))
-                        || (e.SortName != null && EF.Functions.Like(e.SortName, likeSortName)));
+                        || EF.Functions.Like(e.CleanOriginalTitle, likeOriginal, LikePatterns.Escape)
+                        || (e.SortName != null && JellyfinDbFunctions.LikeIgnoreAsciiCase(e.SortName, likeSortName!)));
             }
 
             dbQuery = ApplyTypeFilter(dbQuery, query.IncludeItemTypes, query.ExcludeItemTypes);
@@ -156,13 +154,15 @@ public class SqlSearchProvider : IInternalSearchProvider
                     : ContainsMatchScore
             });
 
-            return await scored
+            // The score is an integer in the query because a float constant is written as an integer in SQL and
+            // some engines then return it as one.
+            var ranked = await scored
                 .OrderByDescending(x => x.Score)
                 .ThenBy(x => x.Id)
                 .Take(limit)
-                .Select(x => new SearchResult(x.Id, x.Score))
                 .ToArrayAsync(cancellationToken)
                 .ConfigureAwait(false);
+            return ranked.Select(x => new SearchResult(x.Id, x.Score)).ToArray();
         }
     }
 

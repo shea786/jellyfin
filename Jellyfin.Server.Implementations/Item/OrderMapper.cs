@@ -66,7 +66,7 @@ public static class OrderMapper
             (ItemSortBy.SeriesSortName, _) => e => e.SeriesName,
             (ItemSortBy.Album, _) => e => e.Album,
             (ItemSortBy.DateCreated, _) => e => e.DateCreated,
-            (ItemSortBy.PremiereDate, _) => e => e.PremiereDate ?? (e.ProductionYear.HasValue ? DateTime.MinValue.AddYears(e.ProductionYear.Value - 1) : null),
+            (ItemSortBy.PremiereDate, _) => e => e.PremiereDate ?? (e.ProductionYear.HasValue ? new DateTime(2000, 1, 1, 0, 0, 0, DateTimeKind.Utc).AddYears(e.ProductionYear.Value - 2000) : null),
             (ItemSortBy.StartDate, _) => e => e.StartDate,
             (ItemSortBy.Name, _) => e => e.CleanName,
             (ItemSortBy.CommunityRating, _) => e => e.CommunityRating,
@@ -92,23 +92,24 @@ public static class OrderMapper
     /// <summary>
     /// Creates an expression to order search results by match quality.
     /// Prioritizes: exact match (0) > prefix match with word boundary (1) > prefix match (2) > contains (3).
-    /// Considers both CleanName and OriginalTitle for matching.
+    /// Considers both CleanName and CleanOriginalTitle for matching.
     /// </summary>
     /// <param name="searchTerm">The search term to match against.</param>
     /// <returns>An expression that returns an integer representing match quality (lower is better).</returns>
     public static Expression<Func<BaseItemEntity, int>> MapSearchRelevanceOrder(string searchTerm)
     {
+        searchTerm = searchTerm.RemoveNullCharacters();
         var cleanSearchTerm = GetCleanValue(searchTerm);
         var searchPrefix = cleanSearchTerm + " ";
-        var originalSearchLower = searchTerm.ToLowerInvariant();
-        var originalSearchPrefix = originalSearchLower + " ";
+        var cleanOriginalSearch = MatchNormalizer.CleanOriginalTitle(searchTerm)!;
+        var cleanOriginalPrefix = cleanOriginalSearch + " ";
         return e =>
-            // Exact match on CleanName or OriginalTitle
-            (e.CleanName == cleanSearchTerm || (e.OriginalTitle != null && e.OriginalTitle.ToLower() == originalSearchLower)) ? 0 :
+            // Exact match on CleanName or CleanOriginalTitle
+            (e.CleanName == cleanSearchTerm || e.CleanOriginalTitle == cleanOriginalSearch) ? 0 :
             // Prefix match with word boundary
-            (e.CleanName!.StartsWith(searchPrefix) || (e.OriginalTitle != null && e.OriginalTitle.ToLower().StartsWith(originalSearchPrefix))) ? 1 :
+            (e.CleanName!.StartsWith(searchPrefix) || (e.CleanOriginalTitle != null && e.CleanOriginalTitle.StartsWith(cleanOriginalPrefix))) ? 1 :
             // Prefix match
-            (e.CleanName!.StartsWith(cleanSearchTerm) || (e.OriginalTitle != null && e.OriginalTitle.ToLower().StartsWith(originalSearchLower))) ? 2 : 3;
+            (e.CleanName!.StartsWith(cleanSearchTerm) || (e.CleanOriginalTitle != null && e.CleanOriginalTitle.StartsWith(cleanOriginalSearch))) ? 2 : 3;
     }
 
     private static string GetCleanValue(string value)

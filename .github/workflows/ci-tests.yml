@@ -3,6 +3,9 @@ on:
   push:
     branches:
       - master
+      - multidb/main
+      - 'port/stable-*'
+  workflow_dispatch:
   # Run tests against the forked branch, but
   # do not allow access to secrets
   # https://docs.github.com/en/actions/using-workflows/events-that-trigger-workflows#workflows-in-forked-repositories
@@ -43,3 +46,21 @@ jobs:
 
       # TODO - which action / tool to use to publish code coverage results?
       # - name: Publish code coverage results
+
+  run-tests-db:
+    permissions:
+      contents: read
+    uses: ./.github/workflows/ci-tests-db.yml
+    with:
+      matrix: |
+        [
+          {
+            "name": "Postgres",
+            "provider": "Postgres",
+            "version": "16",
+            "image": "postgres:16.15-trixie@sha256:ca0bd484cb98bf4b24eb1010e73fb3fcbd6714d240fbc1a10eea5b7dbecb641d",
+            "imageVariable": "JELLYFIN_TEST_POSTGRES_IMAGE",
+            "settings": "postgres.runsettings",
+            "requiredTests": "Jellyfin.Server.Implementations.Tests:DatabaseRestoredFromPgDump_CanBeGroupedByPresentationKey"
+          }
+        ]

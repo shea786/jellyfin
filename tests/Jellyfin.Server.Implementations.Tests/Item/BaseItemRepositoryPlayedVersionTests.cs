@@ -4,6 +4,7 @@ using System.Linq;
 using Emby.Server.Implementations.Data;
 using Jellyfin.Database.Implementations;
 using Jellyfin.Database.Implementations.Entities;
+using Jellyfin.Database.Testing;
 using Jellyfin.Server.Implementations.Item;
 using MediaBrowser.Controller.Entities;
 using Xunit;
@@ -16,7 +17,7 @@ namespace Jellyfin.Server.Implementations.Tests.Item;
 /// version that was actually played, so the played state belongs to the version group rather than to
 /// the row that happens to carry it.
 /// </summary>
-public sealed class BaseItemRepositoryPlayedVersionTests : SqliteDbTestFixture
+public sealed class BaseItemRepositoryPlayedVersionTests : JellyfinDbTestFixture
 {
     private const string MovieType = "MediaBrowser.Controller.Entities.Movies.Movie";
     private const string SeriesType = "MediaBrowser.Controller.Entities.TV.Series";

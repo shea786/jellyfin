@@ -1,5 +1,3 @@
-#pragma warning disable RS0030 // Do not use banned APIs
-
 using System;
 using System.Collections.Generic;
 using System.Collections.Immutable;
@@ -13,6 +11,7 @@ using Emby.Server.Implementations.Data;
 using Jellyfin.Database.Implementations;
 using Jellyfin.Database.Implementations.Entities;
 using Jellyfin.Extensions;
+using Jellyfin.Server.Implementations;
 using Jellyfin.Server.Implementations.Item;
 using Jellyfin.Server.ServerSetupApp;
 using MediaBrowser.Controller;
@@ -80,6 +79,16 @@ internal class MigrateLibraryDb : IDatabaseMigrationRoutine
         using (var operation = GetPreparedDbContext("Cleanup database"))
         {
             operation.JellyfinDbContext.AttachmentStreamInfos.ExecuteDelete();
+
+            // Some servers check a foreign key per row and stop a cascade nested more than 15 levels deep, so a table that
+            // refers to itself is emptied only after its rows have let go of each other.
+#pragma warning disable RS0030 // Do not use banned APIs: Guid != null is a null test inside an EF expression tree.
+            operation.JellyfinDbContext.BaseItems
+                .Where(e => e.OwnerId != null || e.ParentId != null)
+                .ExecuteUpdate(e => e
+                    .SetProperty(f => f.OwnerId, (Guid?)null)
+                    .SetProperty(f => f.ParentId, (Guid?)null));
+#pragma warning restore RS0030
             operation.JellyfinDbContext.BaseItems.ExecuteDelete();
             operation.JellyfinDbContext.ItemValues.ExecuteDelete();
             operation.JellyfinDbContext.UserData.ExecuteDelete();
@@ -231,6 +240,7 @@ internal class MigrateLibraryDb : IDatabaseMigrationRoutine
 
             using (new TrackedMigrationStep("Loading UserData", _logger))
             {
+                var importedKeys = new HashSet<(Guid ItemId, Guid UserId, string Key)>();
                 var users = operation.JellyfinDbContext.Users.AsNoTracking().ToArray();
                 var userIdBlacklist = new HashSet<int>();
 
@@ -263,7 +273,11 @@ internal class MigrateLibraryDb : IDatabaseMigrationRoutine
                     }
 
                     userData.ItemId = refItem.Id;
-                    operation.JellyfinDbContext.UserData.Add(userData);
+                    userData.CustomDataKey = KeyNormalizer.NormalizeUserDataKey(userData.CustomDataKey);
+                    if (importedKeys.Add((userData.ItemId, userData.UserId, userData.CustomDataKey)))
+                    {
+                        operation.JellyfinDbContext.UserData.Add(userData);
+                    }
                 }
             }
 
@@ -366,6 +380,7 @@ internal class MigrateLibraryDb : IDatabaseMigrationRoutine
 
                     if (reader.TryGetString(2, out var role))
                     {
+                        role = KeyNormalizer.CutPersonRole(role);
                     }
 
                     int? sortOrder = reader.IsDBNull(4) ? null : reader.GetInt32(4);
@@ -590,23 +605,42 @@ internal class MigrateLibraryDb : IDatabaseMigrationRoutine
         return chapter;
     }
 
+    private bool IsProviderIdStorable(Guid itemId, string providerId)
+    {
+        if (providerId.Length <= KeyNormalizer.ProviderIdMaxLength)
+        {
+            return true;
+        }
+
+        _logger.LogWarning(
+            "Not migrating a provider id of item {ItemId} whose name is {Length} characters long, the maximum is {MaxLength}",
+            itemId,
+            providerId.Length,
+            KeyNormalizer.ProviderIdMaxLength);
+        return false;
+    }
+
     private ItemValue GetItemValue(SqliteDataReader reader)
     {
+        var value = reader.GetString(2);
+        var cutValue = KeyNormalizer.CutItemValue(value);
         return new ItemValue
         {
             ItemValueId = Guid.NewGuid(),
             Type = (ItemValueType)reader.GetInt32(1),
-            Value = reader.GetString(2),
-            CleanValue = reader.GetString(3),
+            Value = cutValue,
+            CleanValue = cutValue.Length == value.Length ? reader.GetString(3) : cutValue.GetCleanValue(),
         };
     }
 
     private People GetPerson(SqliteDataReader reader)
     {
+        var name = reader.GetString(1);
         var item = new People
         {
             Id = Guid.NewGuid(),
-            Name = reader.GetString(1),
+            Name = name,
+            NameLower = MatchNormalizer.NameLower(name),
         };
 
         if (reader.TryGetString(3, out var type))
@@ -1104,6 +1138,7 @@ internal class MigrateLibraryDb : IDatabaseMigrationRoutine
         if (reader.TryGetString(index++, out var originalTitle))
         {
             entity.OriginalTitle = originalTitle;
+            entity.CleanOriginalTitle = MatchNormalizer.CleanOriginalTitle(originalTitle);
         }
 
         if (reader.TryGetString(index++, out var primaryVersionId) && Guid.TryParse(primaryVersionId, out var primaryVersionGuid))
@@ -1190,6 +1225,7 @@ internal class MigrateLibraryDb : IDatabaseMigrationRoutine
         if (reader.TryGetString(index++, out var providerIds))
         {
             entity.Provider = providerIds.Split('|').Select(e => e.Split("=")).Where(e => e.Length >= 2)
+            .Where(e => IsProviderIdStorable(entity.Id, e[0]))
             .Select(e => new BaseItemProvider()
             {
                 Item = null!,

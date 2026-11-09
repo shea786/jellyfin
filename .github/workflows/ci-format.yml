@@ -3,6 +3,9 @@ on:
   push:
     branches:
       - master
+      - multidb/main
+      - 'port/stable-*'
+  workflow_dispatch:
   # Run formatter against the forked branch, but
   # do not allow access to secrets
   # https://docs.github.com/en/actions/using-workflows/events-that-trigger-workflows#workflows-in-forked-repositories

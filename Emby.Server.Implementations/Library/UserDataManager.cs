@@ -8,6 +8,8 @@ using System.Threading;
 using BitFaster.Caching.Lru;
 using Jellyfin.Database.Implementations;
 using Jellyfin.Database.Implementations.Entities;
+using Jellyfin.Extensions;
+using Jellyfin.Server.Implementations;
 using MediaBrowser.Controller.Configuration;
 using MediaBrowser.Controller.Dto;
 using MediaBrowser.Controller.Entities;
@@ -55,7 +57,7 @@ namespace Emby.Server.Implementations.Library
 
             cancellationToken.ThrowIfCancellationRequested();
 
-            var keys = item.GetUserDataKeys();
+            var keys = item.GetUserDataKeys().Select(e => KeyNormalizer.NormalizeUserDataKey(e.RemoveNullCharacters())).Distinct().ToList();
 
             using var dbContext = _repository.CreateDbContext();
             using var transaction = dbContext.Database.BeginTransaction();
@@ -248,7 +250,7 @@ namespace Emby.Server.Implementations.Library
                 }
                 else
                 {
-                    userData = new UserItemData { Key = keys.Count > 0 ? keys[0] : string.Empty };
+                    userData = new UserItemData { Key = keys.Count > 0 ? KeyNormalizer.NormalizeUserDataKey(keys[0].RemoveNullCharacters()) : string.Empty };
                 }
 
                 result[item.Id] = userData;
@@ -372,7 +374,7 @@ namespace Emby.Server.Implementations.Library
             var row = ResolveUserDataRow(item, item.UserData?.Where(e => e.UserId.Equals(user.Id)));
             return row is not null ? Map(row) : new UserItemData()
             {
-                Key = item.GetUserDataKeys()[0],
+                Key = KeyNormalizer.NormalizeUserDataKey(item.GetUserDataKeys()[0].RemoveNullCharacters()),
             };
         }
 
@@ -393,7 +395,8 @@ namespace Emby.Server.Implementations.Library
 
             foreach (var key in item.GetUserDataKeys())
             {
-                var match = candidates.Find(e => string.Equals(e.CustomDataKey, key, StringComparison.Ordinal));
+                var cleanKey = KeyNormalizer.NormalizeUserDataKey(key.RemoveNullCharacters());
+                var match = candidates.Find(e => string.Equals(e.CustomDataKey, cleanKey, StringComparison.Ordinal));
                 if (match is not null)
                 {
                     return match;

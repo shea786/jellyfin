@@ -117,6 +117,35 @@ public sealed class JellyfinMigrationServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task CheckFirstTimeRunOrMigration_ServerWithoutCompletedSetupAndPartialHistory_SeedsMissingCodeMigrations()
+    {
+        WriteServerConfiguration(wizardCompleted: false);
+        await CreateService().CheckFirstTimeRunOrMigration(_paths, new StartupOptions());
+        var applied = await GetAppliedMigrationIdsAsync();
+        Assert.True(applied.Length > 1, "Setup should seed more than one code migration.");
+        await DeleteAppliedMigrationsAsync(applied[..1]);
+
+        await CreateService().CheckFirstTimeRunOrMigration(_paths, new StartupOptions());
+
+        Assert.Equal(applied, await GetAppliedMigrationIdsAsync());
+    }
+
+    [Fact]
+    public async Task CheckFirstTimeRunOrMigration_SeedSystemOnSetUpServerWithSingleSeededMigration_SeedsMissingCodeMigrations()
+    {
+        WriteServerConfiguration(wizardCompleted: false);
+        await CreateService().CheckFirstTimeRunOrMigration(_paths, new StartupOptions());
+        var applied = await GetAppliedMigrationIdsAsync();
+        Assert.True(applied.Length > 1, "Setup should seed more than one code migration.");
+        await DeleteAppliedMigrationsAsync(applied[1..]);
+        WriteServerConfiguration(wizardCompleted: true);
+
+        await CreateService().CheckFirstTimeRunOrMigration(_paths, new StartupOptions { StartupMode = Configuration.StartupMode.SeedSystem });
+
+        Assert.Equal(applied, await GetAppliedMigrationIdsAsync());
+    }
+
+    [Fact]
     public async Task CheckFirstTimeRunOrMigration_MigrateSystemOnSetUpServerWithoutDatabase_Passes()
     {
         WriteServerConfiguration(wizardCompleted: true);
@@ -130,6 +159,38 @@ public sealed class JellyfinMigrationServiceTests : IDisposable
         WriteServerConfiguration(wizardCompleted: true);
 
         await CreateService().CheckFirstTimeRunOrMigration(_paths, new StartupOptions { RestoreArchive = Path.Combine(_root, "backup.zip") });
+    }
+
+    [Fact]
+    public async Task PrepareSystemForMigration_PendingSchemaMigration_AnnouncesTheBackupWithoutNamingAFile()
+    {
+        WriteServerConfiguration(wizardCompleted: false);
+        var service = CreateService();
+        await service.CheckFirstTimeRunOrMigration(_paths, new StartupOptions());
+        var logger = new CollectingLogger();
+
+        await service.PrepareSystemForMigration(logger);
+
+        Assert.Single(logger.Entries, e => e.Message == "A migration will attempt to modify the Jellyfin database, will ask its provider for a backup now.");
+        Assert.DoesNotContain(logger.Entries, e => e.Message.Contains("jellyfin.db", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task PrepareSystemForMigration_ProviderWithABackupKey_LogsTheKeyAsTheBackupPathAndNotThatNoBackupWasTaken()
+    {
+        WriteServerConfiguration(wizardCompleted: false);
+        var service = CreateService();
+        await service.CheckFirstTimeRunOrMigration(_paths, new StartupOptions());
+        var logger = new CollectingLogger();
+
+        await service.PrepareSystemForMigration(logger);
+
+        var backedUp = Assert.Single(logger.Entries, e => e.Message.StartsWith("Jellyfin database has been backed up as ", StringComparison.Ordinal));
+        Assert.Equal("Jellyfin database has been backed up as {BackupPath}", backedUp.OriginalFormat);
+        var backupPath = Assert.IsType<string>(backedUp.Properties["BackupPath"]);
+        Assert.Matches(@"^\d{14}(_\d+)?$", backupPath);
+        Assert.Equal("Jellyfin database has been backed up as " + backupPath, backedUp.Message);
+        Assert.DoesNotContain(logger.Entries, e => e.Message.Contains("No backup of the Jellyfin database was taken", StringComparison.Ordinal));
     }
 
     public void Dispose()
@@ -176,6 +237,16 @@ public sealed class JellyfinMigrationServiceTests : IDisposable
     {
         var factory = _serviceProviders[^1].GetRequiredService<IDbContextFactory<JellyfinDbContext>>();
         return await factory.CreateDbContextAsync(TestContext.Current.CancellationToken);
+    }
+
+    private async Task DeleteAppliedMigrationsAsync(string[] migrationIds)
+    {
+        await using var context = await CreateDbContextAsync();
+        var historyRepository = context.GetService<IHistoryRepository>();
+        foreach (var migrationId in migrationIds)
+        {
+            await context.Database.ExecuteSqlRawAsync(historyRepository.GetDeleteScript(migrationId), TestContext.Current.CancellationToken);
+        }
     }
 
     private async Task<string[]> GetAppliedMigrationIdsAsync()

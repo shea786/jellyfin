@@ -1,53 +1,40 @@
 using System;
 using System.Collections.Generic;
+using System.Data.Common;
 using System.Globalization;
 using System.Linq;
 using Jellyfin.Data.Enums;
 using Jellyfin.Database.Implementations;
 using Jellyfin.Database.Implementations.Entities;
 using Jellyfin.Database.Implementations.Enums;
-using Jellyfin.Database.Implementations.Locking;
-using Jellyfin.Database.Providers.Sqlite;
+using Jellyfin.Database.Testing;
 using Jellyfin.Server.Implementations.Item;
-using MediaBrowser.Common.Configuration;
 using MediaBrowser.Controller.Entities;
 using MediaBrowser.Controller.Library;
 using MediaBrowser.Controller.Persistence;
-using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
-using Microsoft.Extensions.Logging;
-using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.EntityFrameworkCore.Diagnostics;
 using Moq;
 using Xunit;
 using LinkedChildType = Jellyfin.Database.Implementations.Entities.LinkedChildType;
 
 namespace Jellyfin.Server.Implementations.Tests.Item;
 
-public sealed class ItemCountServiceTests : IDisposable
+public sealed class ItemCountServiceTests : JellyfinDbTestFixture
 {
-    private readonly SqliteConnection _connection;
-    private readonly DbContextOptions<JellyfinDbContext> _dbOptions;
-    private readonly IApplicationPaths _applicationPaths;
+    private readonly StatementRecorder _recorder;
     private readonly ItemCountService _service;
     private int _contextsCreated;
-    private List<string>? _capturedSql;
 
     public ItemCountServiceTests()
+        : this(new StatementRecorder())
     {
-        _applicationPaths = new Mock<IApplicationPaths>().Object;
+    }
 
-        _connection = new SqliteConnection("Data Source=:memory:");
-        _connection.Open();
-
-        _dbOptions = new DbContextOptionsBuilder<JellyfinDbContext>()
-            .UseSqlite(_connection)
-            .LogTo(CaptureStatement, LogLevel.Information)
-            .Options;
-
-        using (var context = CreateDbContext())
-        {
-            context.Database.EnsureCreated();
-        }
+    private ItemCountServiceTests(StatementRecorder recorder)
+        : base(recorder)
+    {
+        _recorder = recorder;
 
         var factory = new Mock<IDbContextFactory<JellyfinDbContext>>();
         factory.Setup(f => f.CreateDbContext()).Returns(() =>
@@ -84,19 +71,6 @@ public sealed class ItemCountServiceTests : IDisposable
             factory.Object,
             typeLookup.Object,
             queryHelpers.Object);
-    }
-
-    public void Dispose()
-    {
-        _connection.Dispose();
-    }
-
-    private void CaptureStatement(string message)
-    {
-        if (_capturedSql is not null && message.Contains("SELECT", StringComparison.Ordinal))
-        {
-            _capturedSql.Add(message[message.IndexOf("SELECT", StringComparison.Ordinal)..]);
-        }
     }
 
     [Fact]
@@ -699,6 +673,9 @@ public sealed class ItemCountServiceTests : IDisposable
         // Every id list has to be bound as one parameter rather than one placeholder each: that is
         // what keeps the statement off the SQLite variable ceiling and out of a per-size entry in
         // EF's compiled query cache. Identical SQL for two batch sizes is exactly that property.
+        Assert.SkipWhen(
+            TestDatabaseEnvironment.Provider is TestDbProvider.MySql or TestDbProvider.MariaDb,
+            "This engine has no way to read a list back from one parameter, so it sends one parameter per value.");
         var seeded = SeedArtists(6, out _);
 
         var small = CaptureSql(() => _service.GetItemCountsForNameItems(
@@ -713,15 +690,16 @@ public sealed class ItemCountServiceTests : IDisposable
 
     private List<string> CaptureSql(Action action)
     {
-        _capturedSql = [];
+        _recorder.Statements.Clear();
+        _recorder.IsRecording = true;
         try
         {
             action();
-            return _capturedSql;
+            return [.. _recorder.Statements];
         }
         finally
         {
-            _capturedSql = null;
+            _recorder.IsRecording = false;
         }
     }
 
@@ -868,7 +846,7 @@ public sealed class ItemCountServiceTests : IDisposable
             person.CleanName = personName;
             context.BaseItems.Add(person);
 
-            var people = new People { Id = Guid.NewGuid(), Name = personName };
+            var people = new People { Id = Guid.NewGuid(), Name = personName, NameLower = MatchNormalizer.NameLower(personName) };
             context.Peoples.Add(people);
 
             var year = 2000 + i;
@@ -1265,14 +1243,20 @@ public sealed class ItemCountServiceTests : IDisposable
         };
     }
 
-    private JellyfinDbContext CreateDbContext()
+    private sealed class StatementRecorder : DbCommandInterceptor
     {
-        return new JellyfinDbContext(
-            _dbOptions,
-            NullLogger<JellyfinDbContext>.Instance,
-            new SqliteDatabaseProvider(
-                _applicationPaths,
-                NullLogger<SqliteDatabaseProvider>.Instance),
-            new NoLockBehavior(NullLogger<NoLockBehavior>.Instance));
+        public List<string> Statements { get; } = [];
+
+        public bool IsRecording { get; set; }
+
+        public override InterceptionResult<DbDataReader> ReaderExecuting(DbCommand command, CommandEventData eventData, InterceptionResult<DbDataReader> result)
+        {
+            if (IsRecording && command.CommandText.Contains("SELECT", StringComparison.Ordinal))
+            {
+                Statements.Add(command.CommandText);
+            }
+
+            return result;
+        }
     }
 }

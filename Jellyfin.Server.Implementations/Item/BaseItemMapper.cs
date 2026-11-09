@@ -293,6 +293,7 @@ public static class BaseItemMapper
         entity.CriticRating = dto.CriticRating;
         entity.PresentationUniqueKey = dto.PresentationUniqueKey;
         entity.OriginalTitle = dto.OriginalTitle;
+        entity.CleanOriginalTitle = MatchNormalizer.CleanOriginalTitle(dto.OriginalTitle);
         entity.OriginalLanguage = dto.OriginalLanguage;
         entity.Album = dto.Album;
         entity.LUFS = dto.LUFS;
@@ -312,12 +313,15 @@ public static class BaseItemMapper
         entity.OwnerId = dto.OwnerId == Guid.Empty ? null : dto.OwnerId;
         entity.Width = dto.Width;
         entity.Height = dto.Height;
-        entity.Provider = dto.ProviderIds.Select(e => new BaseItemProvider()
-        {
-            Item = entity,
-            ProviderId = e.Key,
-            ProviderValue = e.Value
-        }).ToList();
+        entity.Provider = dto.ProviderIds
+            .Select(e => (Id: e.Key.RemoveNullCharacters(), e.Value))
+            .DistinctBy(e => e.Id)
+            .Select(e => new BaseItemProvider()
+            {
+                Item = entity,
+                ProviderId = e.Id,
+                ProviderValue = e.Value
+            }).ToList();
 
         if (dto.Audio.HasValue)
         {

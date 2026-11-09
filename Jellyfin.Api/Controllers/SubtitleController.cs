@@ -255,7 +255,20 @@ public class SubtitleController : BaseJellyfinApiController
 
                 var text = await reader.ReadToEndAsync().ConfigureAwait(false);
 
-                text = text.Replace("WEBVTT", "WEBVTT\nX-TIMESTAMP-MAP=MPEGTS:900000,LOCAL:00:00:00.000", StringComparison.Ordinal);
+                if (text.StartsWith("WEBVTT", StringComparison.Ordinal))
+                {
+                    var headerEnd = text.IndexOf('\n', StringComparison.Ordinal);
+                    var timestampMap = "X-TIMESTAMP-MAP=MPEGTS:900000,LOCAL:00:00:00.000";
+                    if (headerEnd >= 0)
+                    {
+                        var newLine = text[headerEnd - 1] == '\r' ? "\r\n" : "\n";
+                        text = text.Insert(headerEnd + 1, timestampMap + newLine);
+                    }
+                    else
+                    {
+                        text += "\n" + timestampMap;
+                    }
+                }
 
                 return File(Encoding.UTF8.GetBytes(text), MimeTypes.GetMimeType("file." + format));
             }
@@ -386,7 +399,7 @@ public class SubtitleController : BaseJellyfinApiController
             var lengthTicks = Math.Min(remaining, segmentLengthTicks);
 
             builder.Append("#EXTINF:")
-                .Append(TimeSpan.FromTicks(lengthTicks).TotalSeconds)
+                .Append(TimeSpan.FromTicks(lengthTicks).TotalSeconds.ToString(CultureInfo.InvariantCulture))
                 .Append(',')
                 .AppendLine();
 

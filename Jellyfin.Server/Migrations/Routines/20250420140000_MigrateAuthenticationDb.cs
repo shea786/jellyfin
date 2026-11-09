@@ -5,6 +5,7 @@ using System.IO;
 using Emby.Server.Implementations.Data;
 using Jellyfin.Database.Implementations;
 using Jellyfin.Database.Implementations.Entities.Security;
+using Jellyfin.Server.Implementations;
 using MediaBrowser.Controller;
 using MediaBrowser.Controller.Library;
 using Microsoft.Data.Sqlite;
@@ -59,7 +60,7 @@ namespace Jellyfin.Server.Migrations.Routines
                 return;
             }
 
-            using (var connection = new SqliteConnection($"Filename={dbFilePath}"))
+            using (var connection = new SqliteConnection(new SqliteConnectionStringBuilder { DataSource = dbFilePath, Pooling = false }.ToString()))
             {
                 connection.Open();
 
@@ -108,7 +109,7 @@ namespace Jellyfin.Server.Migrations.Routines
                             row.GetString(3),
                             row.GetString(4),
                             row.GetString(5),
-                            row.GetString(2))
+                            KeyNormalizer.NormalizeDeviceId(row.GetString(2)))
                         {
                             AccessToken = row.GetString(1),
                             IsActive = row.GetBoolean(8),
@@ -127,7 +128,7 @@ namespace Jellyfin.Server.Migrations.Routines
                         continue;
                     }
 
-                    var deviceId = row.GetString(2);
+                    var deviceId = KeyNormalizer.NormalizeDeviceId(row.GetString(2));
                     if (deviceIds.Contains(deviceId))
                     {
                         continue;
