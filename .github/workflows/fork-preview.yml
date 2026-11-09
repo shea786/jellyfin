@@ -100,7 +100,7 @@ jobs:
         run: |
           gh release create "$PREVIEW_TAG" dist/* \
             --repo "$GITHUB_REPOSITORY" --verify-tag \
-            --target "$(git rev-parse HEAD)" --prerelease --latest=false \
+            --prerelease --latest=false \
             --title "Jellyfin multi-database $PREVIEW_TAG (preview)" \
             --notes-file "docs/releases/$PREVIEW_TAG.md"
 
