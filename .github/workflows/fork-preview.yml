@@ -4,12 +4,18 @@ on:
   push:
     tags:
       - 'v*-multidb.preview.*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing preview tag to publish after a failed attempt
+        required: true
+        type: string
 
 permissions:
   contents: read
 
 concurrency:
-  group: fork-preview-${{ github.ref }}
+  group: fork-preview-${{ inputs.tag || github.ref_name }}
   cancel-in-progress: false
 
 jobs:
@@ -28,9 +34,12 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+          ref: ${{ inputs.tag || github.ref }}
 
       - name: Validate stable baseline, tag and CI
-        run: python3 .github/scripts/validate-preview.py
+        env:
+          TARGET_TAG: ${{ inputs.tag || github.ref_name }}
+        run: GITHUB_REF_NAME="$TARGET_TAG" GITHUB_REF_TYPE=tag python3 .github/scripts/validate-preview.py
 
       - name: Log in to the fork image registry
         run: printf '%s' "$GH_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
@@ -55,7 +64,14 @@ jobs:
               'Microsoft.NETCore.App': '10.0.14', 'Microsoft.AspNetCore.App': '10.0.14'
           }, data
           PY
-          docker run --rm --entrypoint /jellyfin/jellyfin "$IMAGE" --version
+          # CommandLineParser prints --version and returns 1 through the server's NotParsed handler.
+          status=0
+          version=$(docker run --rm --entrypoint /jellyfin/jellyfin "$IMAGE" --version 2>&1) || status=$?
+          if [[ "$status" != 0 && "$status" != 1 ]]; then
+            exit "$status"
+          fi
+          test "$version" = 'Jellyfin.Server 12.4.0.0'
+          printf '%s\n' "$version"
 
       - name: Publish the versioned image
         run: docker push "$IMAGE"
